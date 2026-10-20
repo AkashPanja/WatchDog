@@ -28,6 +28,20 @@ Open `http://<host>:8099` and sign in with the credentials from `.env`.
 Ports and credentials are all environment-driven (see below). Everything persistent lives
 in `./data`: database, face photos, downloaded models and the HLS buffer.
 
+## Prebuilt image (Docker Hub)
+
+CI builds and pushes the image to Docker Hub automatically on every `v*` tag (workflow:
+`.github/workflows/docker-publish.yml`). One-time setup on GitHub:
+
+1. On Docker Hub: Account settings → Personal access tokens → Generate (Read & Write).
+2. On GitHub: repo → Settings → Secrets and variables → Actions → New repository secret:
+   - `DOCKERHUB_USERNAME` — your Docker Hub username
+   - `DOCKERHUB_TOKEN` — the token from step 1
+3. Push a tag to publish: `git tag v0.1.0 && git push origin v0.1.0`
+
+The image lands at `<your-dockerhub-user>/watchdog:<tag>` (plus `:latest` on main).
+To use it instead of building locally, swap `build: .` for `image:` in `docker-compose.yml`.
+
 ## Environment
 
 | Variable | Default | Description |
