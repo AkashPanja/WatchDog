@@ -39,10 +39,12 @@ in `./data`: database, face photos, downloaded models and the HLS buffer.
 | `WATCHDOG_PORT` | `8099` | Host port mapping |
 | `DATA_DIR` | `/data` | Storage inside the container |
 | `HLS_TIME` | `2` | Segment length (seconds) |
-| `HLS_WINDOW_SECONDS` | `300` | Rolling buffer length (5 minutes) |
+| `HLS_WINDOW_SECONDS` | `300` | Rolling buffer length (5 minutes), kept for **every** camera regardless of engine |
 | `HLS_TRANSCODE` | `false` | `true` re-encodes to H.264 (use for HEVC cameras or broken `-c:v copy` streams) |
 | `ANALYSIS_FPS` | `2` | Frames per second pulled for detection/identification |
 | `ANALYSIS_WIDTH` | `1280` | Width of analysis frames |
+| `FRAME_BUFFER_FRAMES` | `15` | Analysis frames kept in memory and scanned on a trigger |
+| `FACE_CROP_SIZE` | `512` | Minimum size the cropped/zoomed face is enlarged to before it goes to the LLM |
 | `MOTION_THRESHOLD` | `0.02` | Fraction of zone pixels changed to count as motion |
 | `MOTION_COOLDOWN` | `15` | Seconds between motion webhooks per camera |
 | `WEBHOOK_TIMEOUT` | `10` | Webhook HTTP timeout |
@@ -100,8 +102,10 @@ Response:
 
 - `match` is `confidence >= threshold_used` (per-person threshold; default 95).
 - `source` is `python` or `llm` (hybrid reports whichever produced the returned verdict).
+- In `llm` and `hybrid` modes the LLM receives the full frame **and** the locally cropped,
+  zoomed face, so `face_crop_b64` is returned for every engine.
 - A returned LLM name that is not enrolled is discarded as a non-match.
-- `face_crop_b64` is only present for local detection.
+- The rolling 5-minute buffer is recorded for every camera, whatever engine it uses.
 
 Other endpoints (all JSON unless noted):
 
@@ -162,6 +166,12 @@ are visible in **Events**.
   a second ffmpeg emits 2 fps JPEG frames for detection and identification.
   Only the last 5 minutes per camera are kept on disk.
 - **Motion**: grayscale diff masked by the zone polygon; ratio above the threshold triggers.
+- **Trigger pipeline**: when a trigger fires (motion/human or `identify`), the buffered
+  analysis frames are scanned, the clearest/largest face is picked, cropped and zoomed
+  (padded, upscaled to `FACE_CROP_SIZE`), and sent to the LLM together with the full frame
+  and the enrolled references — a zoomed face gives noticeably more accurate verdicts than
+  a full, distant frame. If no face is found, the upper part of the best person box is used
+  instead, and if there is no person either, the full frame alone is sent.
 - **People (python/hybrid)**: YOLOv8n ONNX person boxes, bbox center/corners tested against
   the zone polygon.
 - **Faces**: SCRFD (`det_10g.onnx`) detection, 5-point alignment, ArcFace (`w600k_r50.onnx`)

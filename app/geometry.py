@@ -57,3 +57,10 @@ def valid_polygon(polygon: list[list[float]], max_points: int = 50) -> bool:
         if not all(isinstance(value, (int, float)) and 0.0 <= value <= 1.0 for value in point):
             return False
     return True
+
+
+def face_rank(bbox: tuple[float, float, float, float], score: float) -> float:
+    """Rank faces by detector confidence times face area (bigger & clearer wins)."""
+    width = max(0.0, float(bbox[2]) - float(bbox[0]))
+    height = max(0.0, float(bbox[3]) - float(bbox[1]))
+    return width * height * max(0.0, float(score))

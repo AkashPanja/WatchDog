@@ -11,12 +11,14 @@ import time
 import cv2
 import numpy as np
 
-from . import llm, vision, webhook
+from . import face, llm, vision, webhook
 from .config import config
+from .geometry import face_rank
 
 _LOGGER = logging.getLogger("watchdog.detector")
 
 MOTION_ANALYSIS_WIDTH = 320
+TRIGGER_FRAMES = 6
 
 
 class CameraWorker(threading.Thread):
@@ -85,8 +87,9 @@ class CameraWorker(threading.Thread):
         elif self.camera["mode"] == "llm":
             annotated = vision.draw_zone(_resize(image, 960), self.camera["zone"])
             frame = vision.encode_jpeg(annotated, 80)
+            crop = self._trigger_crop(image)
             try:
-                verdict = asyncio.run(llm.detect_human_with_llm(frame))
+                verdict = asyncio.run(llm.detect_human_with_llm(frame, crop))
             except llm.LLMError as err:
                 _LOGGER.warning("LLM detection failed for %s: %s", self.camera["id"], err)
                 return
@@ -98,6 +101,29 @@ class CameraWorker(threading.Thread):
                 webhook.notify(
                     self.camera, "human", round(min(100.0, max(0.0, confidence)), 1), snapshot
                 )
+
+    def _trigger_crop(self, image: np.ndarray) -> bytes | None:
+        """Crop and zoom the best face found in the buffered trigger frames."""
+        buffered = [data for data, _ in self.stream.recent_frames()][-TRIGGER_FRAMES:]
+        best_rank = -1.0
+        best_crop: bytes | None = None
+        for data in buffered:
+            candidate_frame = vision.decode_jpeg(data)
+            if candidate_frame is None:
+                continue
+            detected = face.best_face(face.detect_faces(candidate_frame))
+            if detected is None:
+                continue
+            rank = face_rank(tuple(detected["bbox"]), detected.get("score", 0.0))
+            if rank > best_rank:
+                best_rank = rank
+                best_crop = face.crop_face_bytes(candidate_frame, detected["bbox"])
+        if best_crop is not None:
+            return best_crop
+        persons = vision.persons_in_zone(image, self.camera["zone"], confidence=0.3)
+        if persons:
+            return face.crop_person_head_bytes(image, list(persons[0][:4]))
+        return None
 
 
 def _resize(image: np.ndarray, width: int) -> np.ndarray:

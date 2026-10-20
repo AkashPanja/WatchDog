@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import base64
 import math
 import threading
 from pathlib import Path
@@ -10,6 +11,8 @@ import cv2
 import numpy as np
 
 from . import store
+from .config import config
+from .geometry import face_rank
 from .vision import encode_jpeg
 
 ARCFACE_TEMPLATE = np.array(
@@ -227,12 +230,15 @@ def align_face(image: np.ndarray, keypoints: list[list[float]]) -> np.ndarray | 
     return cv2.warpAffine(image, matrix, (112, 112), borderValue=0.0)
 
 
-def crop_face_b64(image: np.ndarray, bbox: list[float], padding: float = 0.4) -> str | None:
-    """Crop a face with padding, upscale small crops, return base64 JPEG."""
-    import base64
-
+def crop_face_bytes(
+    image: np.ndarray,
+    bbox: list[float],
+    padding: float = 0.4,
+    target: int | None = None,
+) -> bytes | None:
+    """Crop a face with padding and zoom it up for vision models."""
     height, width = image.shape[:2]
-    x1, y1, x2, y2 = bbox
+    x1, y1, x2, y2 = (float(value) for value in bbox)
     face_w = x2 - x1
     face_h = y2 - y1
     if face_w <= 1 or face_h <= 1:
@@ -246,16 +252,51 @@ def crop_face_b64(image: np.ndarray, bbox: list[float], padding: float = 0.4) ->
     if right - left < 2 or bottom - top < 2:
         return None
     crop = image[top:bottom, left:right]
-    target = 240
-    scale = max(1.0, target / max(1, min(crop.shape[:2])))
+    size = target or config.face_crop_size
+    scale = max(1.0, size / max(1, min(crop.shape[:2])))
     if scale > 1.0:
         crop = cv2.resize(
             crop,
             (int(crop.shape[1] * scale), int(crop.shape[0] * scale)),
             interpolation=cv2.INTER_CUBIC,
         )
-    data = encode_jpeg(crop, 88)
-    return base64.b64encode(data).decode("ascii")
+    return encode_jpeg(crop, 90)
+
+
+def crop_face_b64(image: np.ndarray, bbox: list[float], padding: float = 0.4) -> str | None:
+    """Base64 JPEG preview of the cropped/zoomed face."""
+    data = crop_face_bytes(image, bbox, padding=padding, target=240)
+    return None if data is None else base64.b64encode(data).decode("ascii")
+
+
+def crop_person_head_bytes(
+    image: np.ndarray, bbox: list[float], target: int | None = None
+) -> bytes | None:
+    """Fallback crop: upper part of a person box (head area) when no face is found."""
+    x1, y1, x2, y2 = (float(value) for value in bbox)
+    height = max(1.0, y2 - y1)
+    head_box = [x1, y1, x2, y1 + height * 0.45]
+    return crop_face_bytes(image, head_box, padding=0.15, target=target)
+
+
+def best_face(faces: list[dict]) -> dict | None:
+    """Pick the highest ranked face (area x detector score)."""
+    best: dict | None = None
+    best_rank = -1.0
+    for candidate in faces:
+        rank = face_rank(tuple(candidate["bbox"]), candidate.get("score", 0.0))
+        if rank > best_rank:
+            best = candidate
+            best_rank = rank
+    return best
+
+
+def best_face_crop(image: np.ndarray, target: int | None = None) -> bytes | None:
+    """Detect the best face in a frame and return its zoomed crop."""
+    candidate = best_face(detect_faces(image))
+    if candidate is None:
+        return None
+    return crop_face_bytes(image, candidate["bbox"], target=target)
 
 
 _face_detector_instance: FaceDetector | None = None
@@ -270,17 +311,17 @@ def _face_detector() -> FaceDetector:
     return _face_detector_instance
 
 
+def detect_faces(image: np.ndarray) -> list[dict]:
+    """Detect faces with the shared detector instance."""
+    return _face_detector().detect(image)
+
+
 def face_embedder() -> FaceEmbedder:
     global _embedder_instance
     with _embedder_lock:
         if _embedder_instance is None:
             _embedder_instance = FaceEmbedder()
     return _embedder_instance
-
-
-def detect_faces(image: np.ndarray) -> list[dict]:
-    """Detect faces with the shared detector instance."""
-    return _face_detector().detect(image)
 
 
 _GALLERY_CACHE: dict[str, tuple[float, np.ndarray]] = {}

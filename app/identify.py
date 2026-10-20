@@ -1,4 +1,9 @@
-"""Person identification: local, LLM or hybrid per-camera modes."""
+"""Person identification: local, LLM or hybrid per-camera modes.
+
+On every call the buffered analysis frames of the camera are scanned, the best
+(clearest/largest) face is picked, cropped and zoomed. The LLM then receives the
+enrolled references, the full frame and that zoomed crop for a more accurate verdict.
+"""
 
 from __future__ import annotations
 
@@ -11,6 +16,7 @@ import cv2
 from . import face, llm, vision
 from .config import config
 from .db import SessionLocal
+from .geometry import face_rank
 from .models import Camera, Person
 from .streams import manager
 
@@ -19,6 +25,7 @@ _LOGGER = logging.getLogger("watchdog.identify")
 LLM_ESCALATION_MARGIN = 10.0
 MAX_LLM_REFERENCES = 8
 LLM_IMAGE_WIDTH = 900
+MAX_FACE_CANDIDATES = 3
 
 
 class IdentifyError(Exception):
@@ -42,16 +49,43 @@ def _gallery() -> list[dict]:
         ]
 
 
-def _load_frame(camera_id: str) -> bytes:
+def _load_frames(camera_id: str) -> list[bytes]:
+    """Buffered frames around now; falls back to the newest single frame."""
     stream = manager.get_stream(camera_id)
     if stream is None:
         raise IdentifyError("camera stream is not running")
+    now = time.monotonic()
+    frames = [
+        data
+        for data, timestamp in stream.recent_frames()
+        if now - timestamp <= config.frame_max_age
+    ]
+    if frames:
+        return frames
     frame, frame_ts = stream.latest_frame()
     if frame is None:
         raise IdentifyError("no video frame available yet")
-    if time.monotonic() - frame_ts > config.frame_max_age * 2:
+    if now - frame_ts > config.frame_max_age * 2:
         raise IdentifyError("camera frame is stale")
-    return frame
+    return [frame]
+
+
+def _face_candidates(frames: list[bytes]) -> list[tuple[object, dict]]:
+    """Detect faces across the buffered frames, best (area x score) first."""
+    candidates: list[tuple[object, dict]] = []
+    for data in frames:
+        image = vision.decode_jpeg(data)
+        if image is None:
+            continue
+        for detected in face.detect_faces(image):
+            candidates.append((image, detected))
+    candidates.sort(
+        key=lambda item: face_rank(
+            tuple(item[1]["bbox"]), item[1].get("score", 0.0)
+        ),
+        reverse=True,
+    )
+    return candidates[:MAX_FACE_CANDIDATES]
 
 
 def _empty_result(source: str, human_detected: bool) -> dict:
@@ -66,21 +100,25 @@ def _empty_result(source: str, human_detected: bool) -> dict:
     }
 
 
-def _identify_python(image, gallery: list[dict]) -> dict:
-    faces = face.detect_faces(image)
-    human_detected = bool(faces)
-    if not faces:
-        try:
-            human_detected = bool(vision.persons_in_zone(image, []))
-        except Exception:  # noqa: BLE001 - best effort
-            human_detected = False
+def _human_present(frames: list[bytes]) -> bool:
+    image = vision.decode_jpeg(frames[-1])
+    if image is None:
+        return False
+    try:
+        return bool(vision.persons_in_zone(image, []))
+    except Exception:  # noqa: BLE001 - detection is best effort
+        return False
 
-    if not faces or not gallery:
+
+def _identify_python(frames: list[bytes], gallery: list[dict]) -> dict:
+    candidates = _face_candidates(frames)
+    human_detected = bool(candidates) or _human_present(frames)
+    if not candidates or not gallery:
         return _empty_result("python", human_detected)
 
     embedder = face.face_embedder()
     best: dict | None = None
-    for candidate in faces:
+    for image, candidate in candidates:
         aligned = face.align_face(image, candidate["kps"])
         vector = embedder.embed_aligned(aligned) if aligned is not None else None
         if vector is None:
@@ -99,6 +137,7 @@ def _identify_python(image, gallery: list[dict]) -> dict:
                         "confidence": confidence,
                         "similarity": round(similarity, 4),
                         "bbox": candidate["bbox"],
+                        "image": image,
                     }
 
     if best is None:
@@ -111,7 +150,7 @@ def _identify_python(image, gallery: list[dict]) -> dict:
         "confidence": round(best["confidence"], 1),
         "threshold_used": best["threshold"] if match else None,
         "human_detected": human_detected,
-        "face_crop_b64": face.crop_face_b64(image, best["bbox"]),
+        "face_crop_b64": face.crop_face_b64(best["image"], best["bbox"]),
         "source": "python",
         "similarity": best["similarity"],
     }
@@ -144,13 +183,27 @@ def _reference_images(gallery: list[dict]) -> list[tuple[str, bytes]]:
     return references
 
 
-async def _identify_llm(frame: bytes, gallery: list[dict]) -> dict:
+async def _identify_llm(frames: list[bytes], gallery: list[dict]) -> dict:
     if not gallery:
         raise IdentifyError("no enrolled persons")
+
+    candidates = _face_candidates(frames)
+    if candidates:
+        image, detected = candidates[0]
+        full = _shrink(vision.encode_jpeg(image, 90))
+        crop_bytes = face.crop_face_bytes(image, detected["bbox"])
+        crop_b64 = face.crop_face_b64(image, detected["bbox"])
+    else:
+        full = _shrink(frames[-1])
+        crop_bytes = None
+        crop_b64 = None
+
     verdict = await llm.identify_with_llm(
-        _shrink(frame), _reference_images(gallery)
+        full, _reference_images(gallery), crop_bytes
     )
-    return _verdict_to_result(verdict, gallery, source="llm")
+    result = _verdict_to_result(verdict, gallery, source="llm")
+    result["face_crop_b64"] = crop_b64
+    return result
 
 
 def _verdict_to_result(verdict: dict, gallery: list[dict], source: str) -> dict:
@@ -176,20 +229,17 @@ def _verdict_to_result(verdict: dict, gallery: list[dict], source: str) -> dict:
 
 def identify(camera_id: str) -> dict:
     """Identify the person visible on a camera (blocking)."""
-    frame = _load_frame(camera_id)
+    frames = _load_frames(camera_id)
     gallery = _gallery()
-    image = vision.decode_jpeg(frame)
-    if image is None:
-        raise IdentifyError("could not decode camera frame")
 
     with SessionLocal() as session:
         camera = session.get(Camera, camera_id)
         mode = camera.mode if camera is not None else "python"
 
     if mode == "llm":
-        return asyncio.run(_identify_llm(frame, gallery))
+        return asyncio.run(_identify_llm(frames, gallery))
 
-    local = _identify_python(image, gallery)
+    local = _identify_python(frames, gallery)
     if mode != "hybrid" or local["match"]:
         return local
 
@@ -213,7 +263,7 @@ def identify(camera_id: str) -> dict:
         return local
 
     try:
-        remote = asyncio.run(_identify_llm(frame, gallery))
+        remote = asyncio.run(_identify_llm(frames, gallery))
     except Exception as err:  # noqa: BLE001 - keep the local verdict
         _LOGGER.warning("LLM escalation failed for %s: %s", camera_id, err)
         return local

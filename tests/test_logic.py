@@ -3,7 +3,12 @@
 from __future__ import annotations
 
 from app.config import config
-from app.geometry import bbox_zone_hit, point_in_polygon, valid_polygon
+from app.geometry import (
+    bbox_zone_hit,
+    face_rank,
+    point_in_polygon,
+    valid_polygon,
+)
 from app.jsonutil import extract_json
 
 SQUARE = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
@@ -76,3 +81,15 @@ def test_hls_window_math() -> None:
     expected = max(3, config.hls_window_seconds // config.hls_time)
     assert config.hls_list_size == expected
     assert config.hls_list_size * config.hls_time >= 30
+
+
+def test_face_rank_prefers_larger_and_more_confident() -> None:
+    small = face_rank((0, 0, 20, 20), 0.9)
+    large = face_rank((0, 0, 80, 80), 0.9)
+    assert large > small
+    assert face_rank((0, 0, 40, 40), 0.95) > face_rank((0, 0, 40, 40), 0.5)
+
+
+def test_face_rank_degenerate() -> None:
+    assert face_rank((10, 10, 10, 10), 1.0) == 0.0
+    assert face_rank((0, 0, 30, 30), 0.0) == 0.0

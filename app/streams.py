@@ -6,6 +6,7 @@ import logging
 import subprocess
 import threading
 import time
+from collections import deque
 
 from .config import config
 
@@ -27,6 +28,9 @@ class CameraStream:
         self._thread: threading.Thread | None = None
         self._frame: bytes | None = None
         self._frame_ts = 0.0
+        self._recent: deque[tuple[bytes, float]] = deque(
+            maxlen=config.frame_buffer_frames
+        )
         self._lock = threading.Lock()
 
     def start(self) -> None:
@@ -52,6 +56,11 @@ class CameraStream:
         """Return the newest JPEG frame and its capture monotonic timestamp."""
         with self._lock:
             return self._frame, self._frame_ts
+
+    def recent_frames(self) -> list[tuple[bytes, float]]:
+        """Buffered analysis frames (newest last) used on triggers."""
+        with self._lock:
+            return list(self._recent)
 
     def _kill(self, process: subprocess.Popen | None) -> None:
         if process is None:
@@ -161,6 +170,7 @@ class CameraStream:
                             with self._lock:
                                 self._frame = frame
                                 self._frame_ts = time.monotonic()
+                                self._recent.append((frame, self._frame_ts))
                     if len(buffer) > MAX_BUFFER:
                         buffer = buffer[-1 << 20 :]
                     if self._hls_process is not None and self._hls_process.poll() is not None:
