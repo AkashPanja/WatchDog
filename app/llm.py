@@ -168,13 +168,13 @@ async def vision_json(
 IDENTIFY_SYSTEM = (
     "You are WatchDog, a face-match analyst for a private security camera. "
     "You receive enrolled reference photos first, in the order of the listed names, "
-    "then the full live camera frame, then (when available) a zoomed crop of the face "
-    "detected in that live frame. Compare carefully. Reply with JSON only, no prose."
+    "then a zoomed crop of the face detected in the live frame (when available). "
+    "Compare only the faces. Reply with JSON only, no prose."
 )
 
 IDENTIFY_PROMPT_TEMPLATE = (
     "Enrolled references in image order: {names}.\n"
-    "After the references: the full live frame{extra}.\n"
+    "The last image{extra} is the cropped/zoomed live face.\n"
     'Return exactly: {{"person_found": true|false, "name": "<exact enrolled name or null>", '
     '"confidence": <integer 0-100>}}.\n'
     'Only return a name when the face clearly matches that enrolled person; otherwise '
@@ -183,37 +183,39 @@ IDENTIFY_PROMPT_TEMPLATE = (
 
 DETECT_SYSTEM = (
     "You monitor a private security camera. The yellow polygon marks the detection area. "
-    "You may receive a second image: a zoomed crop of the face/person found inside that "
-    "area, use it to judge more accurately. Reply with JSON only."
+    "You are given a zoomed crop of the person/face found inside that area (if a "
+    "detection exists). Judge from it. Reply with JSON only."
 )
 
 DETECT_PROMPT = (
-    "Image 1 is the full frame with the yellow detection area. If a second image is "
-    "present it is a zoomed crop of the detected face/person inside that area. "
     "Is a human present inside the yellow marked area? "
     'Return exactly: {"person_found": true|false, "confidence": <integer 0-100>}.'
 )
 
 
 async def identify_with_llm(
-    frame: bytes,
+    frame: bytes | None,
     references: list[tuple[str, bytes]],
     face_crop: bytes | None = None,
 ) -> dict:
-    """Match the live frame (plus best-face crop) against enrolled references."""
+    """Match enrolled references against the zoomed live face crop only."""
     names = [name for name, _ in references]
-    images = [image for _, image in references] + [frame]
+    images = [image for _, image in references]
     if face_crop:
         images.append(face_crop)
+    elif frame:
+        images.append(frame)
+    extra = " (the zoomed live face)" if face_crop else ""
     prompt = IDENTIFY_PROMPT_TEMPLATE.format(
         names=", ".join(names) if names else "none",
-        extra=", then a zoomed crop of the detected face" if face_crop else "",
+        extra=extra,
     )
     return await vision_json(images, IDENTIFY_SYSTEM, prompt)
 
 
 async def detect_human_with_llm(
-    frame: bytes, face_crop: bytes | None = None
+    crop: bytes | None = None
 ) -> dict:
-    images = [frame] + ([face_crop] if face_crop else [])
-    return await vision_json(images, DETECT_SYSTEM, DETECT_PROMPT)
+    if crop is None:
+        return {"person_found": False, "confidence": 0}
+    return await vision_json([crop], DETECT_SYSTEM, DETECT_PROMPT)

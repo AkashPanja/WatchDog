@@ -190,16 +190,14 @@ async def _identify_llm(frames: list[bytes], gallery: list[dict]) -> dict:
     candidates = _face_candidates(frames)
     if candidates:
         image, detected = candidates[0]
-        full = _shrink(vision.encode_jpeg(image, 90))
         crop_bytes = face.crop_face_bytes(image, detected["bbox"])
         crop_b64 = face.crop_face_b64(image, detected["bbox"])
     else:
-        full = _shrink(frames[-1])
         crop_bytes = None
         crop_b64 = None
 
     verdict = await llm.identify_with_llm(
-        full, _reference_images(gallery), crop_bytes
+        None, _reference_images(gallery), crop_bytes
     )
     result = _verdict_to_result(verdict, gallery, source="llm")
     result["face_crop_b64"] = crop_b64

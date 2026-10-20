@@ -102,8 +102,8 @@ Response:
 
 - `match` is `confidence >= threshold_used` (per-person threshold; default 95).
 - `source` is `python` or `llm` (hybrid reports whichever produced the returned verdict).
-- In `llm` and `hybrid` modes the LLM receives the full frame **and** the locally cropped,
-  zoomed face, so `face_crop_b64` is returned for every engine.
+- In `llm` and `hybrid` modes the LLM receives only the cropped/zoomed face, so
+  `face_crop_b64` is returned for every engine.
 - A returned LLM name that is not enrolled is discarded as a non-match.
 - The rolling 5-minute buffer is recorded for every camera, whatever engine it uses.
 
@@ -168,10 +168,9 @@ are visible in **Events**.
 - **Motion**: grayscale diff masked by the zone polygon; ratio above the threshold triggers.
 - **Trigger pipeline**: when a trigger fires (motion/human or `identify`), the buffered
   analysis frames are scanned, the clearest/largest face is picked, cropped and zoomed
-  (padded, upscaled to `FACE_CROP_SIZE`), and sent to the LLM together with the full frame
-  and the enrolled references — a zoomed face gives noticeably more accurate verdicts than
-  a full, distant frame. If no face is found, the upper part of the best person box is used
-  instead, and if there is no person either, the full frame alone is sent.
+  (padded, upscaled to `FACE_CROP_SIZE`) and sent to the LLM together with the enrolled
+  references — only the zoomed face, no full frame, which gives noticeably more accurate
+  verdicts. If no face is found, the upper part of the best person box is used instead.
 - **People (python/hybrid)**: YOLOv8n ONNX person boxes, bbox center/corners tested against
   the zone polygon.
 - **Faces**: SCRFD (`det_10g.onnx`) detection, 5-point alignment, ArcFace (`w600k_r50.onnx`)

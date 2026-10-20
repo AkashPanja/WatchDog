@@ -85,11 +85,9 @@ class CameraWorker(threading.Thread):
                 best = round(max(person[4] for person in persons) * 100, 1)
                 webhook.notify(self.camera, "human", best, snapshot)
         elif self.camera["mode"] == "llm":
-            annotated = vision.draw_zone(_resize(image, 960), self.camera["zone"])
-            frame = vision.encode_jpeg(annotated, 80)
             crop = self._trigger_crop(image)
             try:
-                verdict = asyncio.run(llm.detect_human_with_llm(frame, crop))
+                verdict = asyncio.run(llm.detect_human_with_llm(crop))
             except llm.LLMError as err:
                 _LOGGER.warning("LLM detection failed for %s: %s", self.camera["id"], err)
                 return
