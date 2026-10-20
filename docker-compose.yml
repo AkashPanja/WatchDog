@@ -1,8 +1,8 @@
 services:
   watchdog:
-    build: .
-    # Or use a prebuilt image from Docker Hub instead of build:
-    # image: <your-dockerhub-user>/watchdog:latest
+    image: akashpanja/watchdog:latest
+    # To build from source instead, comment out `image:` and uncomment:
+    # build: .
     container_name: watchdog
     restart: unless-stopped
     ports:
