@@ -26,7 +26,7 @@ except ImportError:
     sys.modules["cv2"] = types.ModuleType("cv2")
 
 
-def test_http_smoke() -> None:
+def test_http_smoke(monkeypatch) -> None:
     from fastapi.testclient import TestClient
 
     from app.main import app
@@ -39,6 +39,25 @@ def test_http_smoke() -> None:
         )
         assert login.status_code == 200
         assert client.get("/api/me").status_code == 200
+
+        from app.api import cameras as cameras_api
+
+        monkeypatch.setattr(
+            cameras_api.discover_module,
+            "discover_devices",
+            lambda timeout=3.0: [
+                {
+                    "host": "10.0.0.5",
+                    "onvif_port": 8000,
+                    "name": "Smoke Cam",
+                    "hardware": "fixture",
+                    "xaddr": "http://10.0.0.5:8000/onvif/device_service",
+                }
+            ],
+        )
+        found = client.get("/api/cameras/discover")
+        assert found.status_code == 200
+        assert found.json()[0]["host"] == "10.0.0.5"
 
         person = client.post(
             "/api/persons", json={"name": "Smoke User", "threshold": 90}

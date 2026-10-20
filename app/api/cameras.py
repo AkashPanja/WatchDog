@@ -2,6 +2,7 @@
 
 from __future__ import annotations
 
+import asyncio
 import json
 import re
 import shutil
@@ -11,6 +12,7 @@ from fastapi import APIRouter, HTTPException, Response
 from fastapi.responses import FileResponse
 from pydantic import BaseModel, Field
 
+from .. import discover as discover_module
 from .. import identify as identify_module
 from ..config import config
 from ..db import SessionLocal
@@ -100,6 +102,12 @@ def list_cameras() -> list[dict]:
     with SessionLocal() as session:
         cameras = session.query(Camera).order_by(Camera.created_at).all()
         return [camera.public_dict() for camera in cameras]
+
+
+@router.get("/discover")
+async def discover_cameras(timeout: float = 3.0) -> list[dict]:
+    """Probe the local network for ONVIF cameras (WS-Discovery)."""
+    return await asyncio.to_thread(discover_module.discover_devices, timeout)
 
 
 @router.post("")

@@ -379,6 +379,8 @@ function openCameraDialog(camera = null) {
   $("#camera-onvif-pass").placeholder = camera && camera.has_onvif_password ? "unchanged" : "";
   $("#camera-rtsp").value = camera ? camera.rtsp_url : "";
   $("#camera-error").textContent = "";
+  $("#discover-results").innerHTML = "";
+  $("#discover-status").textContent = "";
   $("#camera-dialog").showModal();
 }
 
@@ -427,6 +429,32 @@ async function testOnvif() {
     $("#camera-error").textContent = "ONVIF OK — RTSP URL filled in";
   } catch (err) {
     $("#camera-error").textContent = err.message;
+  }
+}
+
+async function discoverCameras() {
+  const status = $("#discover-status");
+  const list = $("#discover-results");
+  list.innerHTML = "";
+  status.textContent = "Probing network…";
+  try {
+    const devices = await api("/api/cameras/discover?timeout=4");
+    status.textContent = devices.length ? "" : "No cameras found";
+    for (const device of devices) {
+      const item = document.createElement("li");
+      const label = device.name || device.hardware || "ONVIF device";
+      item.textContent = `${device.host}:${device.onvif_port} — ${label}`;
+      item.title = device.xaddr;
+      item.addEventListener("click", () => {
+        $("#camera-host").value = device.host;
+        $("#camera-port").value = device.onvif_port;
+        list.innerHTML = "";
+        status.textContent = "Host filled from discovery";
+      });
+      list.appendChild(item);
+    }
+  } catch (err) {
+    status.textContent = `Discovery failed: ${err.message}`;
   }
 }
 
@@ -681,6 +709,7 @@ $("#add-camera").addEventListener("click", () => openCameraDialog());
 $("#camera-form").addEventListener("submit", submitCamera);
 $("#camera-cancel").addEventListener("click", () => $("#camera-dialog").close());
 $("#onvif-test").addEventListener("click", testOnvif);
+$("#discover-cameras").addEventListener("click", discoverCameras);
 $("#person-form").addEventListener("submit", addPerson);
 $("#settings-form").addEventListener("submit", saveSettings);
 $("#llm-test").addEventListener("click", testLlm);

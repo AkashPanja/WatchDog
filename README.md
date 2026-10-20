@@ -75,7 +75,9 @@ CI builds and pushes the image automatically on every `v*` tag and every push to
 **Cameras**
 1. **Add camera** → name, detection engine, ONVIF host/port/username/password
    (port is usually 80, some devices use 8000) or paste an RTSP URL directly.
-   *Test ONVIF* resolves the stream URI and fills the RTSP field.
+   *Discover ONVIF* probes the LAN (WS-Discovery) and lists found cameras —
+   click one to fill in host/port. *Test ONVIF* resolves the stream URI and fills
+   the RTSP field.
 2. The live view uses HLS with a rolling 5-minute playlist — drag the seek bar to review
    the last 5 minutes; older segments are deleted automatically.
 3. **Edit zone** → click points on the video (min 3) → **Save zone**. With no zone the
@@ -139,6 +141,7 @@ POST   /api/cameras                    {name, mode, host, port, onvif_username,
 PUT    /api/cameras/{id}
 DELETE /api/cameras/{id}
 POST   /api/cameras/test-onvif         {host, port, username, password} → {rtsp_url}
+GET    /api/cameras/discover           WS-Discovery probe → [{host, onvif_port, name, hardware}]
 GET    /api/cameras/{id}/stream.m3u8   live HLS playlist (5-minute window)
 GET    /api/cameras/{id}/snapshot.jpg  newest frame
 PUT    /api/cameras/{id}/zone          {polygon: [[x,y],...]} normalized 0-1

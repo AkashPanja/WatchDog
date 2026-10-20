@@ -109,6 +109,11 @@
         <input id="camera-rtsp" placeholder="rtsp://user:pass@host:554/stream">
       </label>
       <div class="row">
+        <button type="button" id="discover-cameras" class="ghost">Discover ONVIF</button>
+        <span id="discover-status" class="muted"></span>
+      </div>
+      <ul id="discover-results" class="discover-results"></ul>
+      <div class="row">
         <button type="button" id="onvif-test" class="ghost">Test ONVIF</button>
         <button type="button" id="camera-cancel" class="ghost">Cancel</button>
         <button type="submit" class="primary">Save</button>
