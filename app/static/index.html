@@ -1,0 +1,132 @@
+<!DOCTYPE html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>WatchDog</title>
+  <link rel="stylesheet" href="/static/style.css">
+  <script src="https://cdn.jsdelivr.net/npm/hls.js@1.5.17/dist/hls.min.js"></script>
+</head>
+<body>
+  <div id="login" class="login hidden">
+    <form id="login-form" class="login-card">
+      <h1>WatchDog</h1>
+      <p class="muted">Sign in to your camera guard</p>
+      <label>Username
+        <input id="login-user" autocomplete="username" required>
+      </label>
+      <label>Password
+        <input id="login-pass" type="password" autocomplete="current-password" required>
+      </label>
+      <button type="submit" class="primary">Sign in</button>
+      <p id="login-error" class="error"></p>
+    </form>
+  </div>
+
+  <div id="app" class="hidden">
+    <header>
+      <div class="brand">WatchDog</div>
+      <nav id="tabs">
+        <button data-tab="cameras" class="active">Cameras</button>
+        <button data-tab="persons">People</button>
+        <button data-tab="events">Events</button>
+        <button data-tab="settings">Settings</button>
+      </nav>
+      <button id="logout" class="ghost">Sign out</button>
+    </header>
+
+    <main>
+      <section id="view-cameras">
+        <div class="row between">
+          <h2>Cameras</h2>
+          <button id="add-camera" class="primary">Add camera</button>
+        </div>
+        <div id="camera-grid" class="grid"></div>
+        <p id="cameras-empty" class="muted hidden">No cameras yet. Add one with its ONVIF credentials or an RTSP URL.</p>
+      </section>
+
+      <section id="view-persons" class="hidden">
+        <h2>People</h2>
+        <form id="person-form" class="card inline-form">
+          <label>Name<input id="person-name" required></label>
+          <label>Match threshold (0-100)<input id="person-threshold" type="number" min="0" max="100" step="1" value="95"></label>
+          <label>Photos<input id="person-files" type="file" accept="image/*" multiple></label>
+          <button type="submit" class="primary">Add person</button>
+        </form>
+        <div id="person-list" class="grid"></div>
+        <p id="persons-empty" class="muted hidden">Nobody enrolled yet. Add a person with one or more clear face photos.</p>
+      </section>
+
+      <section id="view-events" class="hidden">
+        <div class="row between">
+          <h2>Recent events</h2>
+          <button id="refresh-events" class="ghost">Refresh</button>
+        </div>
+        <table class="events">
+          <thead><tr><th>Time</th><th>Camera</th><th>Event</th><th>Confidence</th><th>Webhook</th></tr></thead>
+          <tbody id="events-body"></tbody>
+        </table>
+      </section>
+
+      <section id="view-settings" class="hidden">
+        <h2>LLM settings</h2>
+        <form id="settings-form" class="card inline-form">
+          <label>Provider<select id="llm-provider"></select></label>
+          <label>API key<input id="llm-key" type="password" placeholder="unchanged"></label>
+          <label>Model<input id="llm-model" placeholder="provider default"></label>
+          <label>Base URL<input id="llm-base" placeholder="required for OpenAI-compatible"></label>
+          <div class="row">
+            <button type="submit" class="primary">Save</button>
+            <button type="button" id="llm-test" class="ghost">Test</button>
+          </div>
+        </form>
+        <p class="muted">Used only by cameras set to the <em>llm</em> or <em>hybrid</em> detection engine. Models must accept images.</p>
+      </section>
+    </main>
+  </div>
+
+  <dialog id="camera-dialog">
+    <form id="camera-form" method="dialog">
+      <h3 id="camera-dialog-title">Add camera</h3>
+      <input type="hidden" id="camera-id">
+      <label>Name<input id="camera-name" required></label>
+      <label>Detection engine
+        <select id="camera-mode">
+          <option value="python">Python (local CV + face embed)</option>
+          <option value="llm">LLM vision</option>
+          <option value="hybrid">Hybrid (local first, LLM fallback)</option>
+        </select>
+      </label>
+      <div class="two">
+        <label>ONVIF host<input id="camera-host" placeholder="192.168.1.50"></label>
+        <label>ONVIF port<input id="camera-port" type="number" value="80"></label>
+      </div>
+      <div class="two">
+        <label>ONVIF username<input id="camera-onvif-user"></label>
+        <label>ONVIF password<input id="camera-onvif-pass" type="password" placeholder="unchanged"></label>
+      </div>
+      <label>RTSP URL (optional, overrides ONVIF)
+        <input id="camera-rtsp" placeholder="rtsp://user:pass@host:554/stream">
+      </label>
+      <div class="row">
+        <button type="button" id="onvif-test" class="ghost">Test ONVIF</button>
+        <button type="button" id="camera-cancel" class="ghost">Cancel</button>
+        <button type="submit" class="primary">Save</button>
+      </div>
+      <p id="camera-error" class="error"></p>
+    </form>
+  </dialog>
+
+  <dialog id="identify-dialog">
+    <h3>Identification result</h3>
+    <div id="identify-content"></div>
+    <div class="row">
+      <button id="identify-close" class="primary">Close</button>
+    </div>
+  </dialog>
+
+  <div id="toast" class="toast hidden"></div>
+
+  <script src="/static/app.js"></script>
+</body>
+</html>
