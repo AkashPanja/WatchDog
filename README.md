@@ -5,12 +5,14 @@ Self-hosted, single-user camera guard in Docker: live ONVIF/RTSP viewing with a 
 enrolled-people gallery, and an identification API that returns a match verdict, name and
 0–100 confidence score.
 
+Full behaviour specification: [REQUIREMENTS.md](REQUIREMENTS.md).
+
 Each camera independently chooses its detection engine:
 
 | Engine | Motion | Human in zone | Identification |
 | --- | --- | --- | --- |
 | `python` | OpenCV frame diff | YOLOv8n ONNX inside the zone | SCRFD face detect → crop/zoom → ArcFace embedding match (local, offline) |
-| `llm` | OpenCV frame diff | Vision LLM asks "person in the yellow zone?" | Vision LLM compares the live frame with enrolled reference photos |
+| `llm` | OpenCV frame diff | Vision LLM asks "person in the yellow zone?" (zoomed best-face/head crop) | Vision LLM compares the zoomed live face with enrolled reference photos |
 | `hybrid` | OpenCV frame diff | YOLOv8n (cheap gate) | Local face match first; escalates to the LLM only when uncertain |
 
 LLM providers: **OpenAI**, **OpenAI-compatible** (LM Studio, vLLM, DeepSeek, Mistral, …),
