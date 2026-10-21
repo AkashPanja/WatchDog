@@ -4,6 +4,7 @@ from __future__ import annotations
 
 import json
 import logging
+import time
 from datetime import UTC, datetime
 
 import httpx
@@ -17,21 +18,30 @@ _LOGGER = logging.getLogger("watchdog.webhook")
 MAX_EVENTS = 200
 
 
-def fire_webhook(url: str, secret: str, payload: dict) -> tuple[bool, str]:
+def fire_webhook(url: str, secret: str, payload: dict) -> tuple[bool, str, int]:
+    """POST the payload, retrying transient failures. Returns (ok, message, attempts)."""
     if not url:
-        return False, "no webhook url"
+        return False, "no webhook url", 0
     headers = {"Content-Type": "application/json"}
     if secret:
         headers["X-WatchDog-Secret"] = secret
-    try:
-        response = httpx.post(
-            url, json=payload, headers=headers, timeout=config.webhook_timeout
-        )
-        if response.status_code >= 400:
-            return False, f"HTTP {response.status_code}"
-        return True, "ok"
-    except Exception as err:  # noqa: BLE001
-        return False, str(err)
+    attempts = config.webhook_retries + 1
+    message = "not attempted"
+    for attempt in range(1, attempts + 1):
+        try:
+            response = httpx.post(
+                url, json=payload, headers=headers, timeout=config.webhook_timeout
+            )
+            if response.status_code < 400:
+                return True, "ok", attempt
+            message = f"HTTP {response.status_code}"
+            if response.status_code != 429 and response.status_code < 500:
+                return False, message, attempt
+        except Exception as err:  # noqa: BLE001
+            message = str(err)
+        if attempt < attempts:
+            time.sleep(min(2.0, 0.5 * (2 ** (attempt - 1))))
+    return False, message, attempts
 
 
 def record_event(
@@ -67,8 +77,10 @@ def notify(
     detail: dict = {"confidence": confidence}
     url = camera.get("webhook_url") or ""
     if url:
-        ok, message = fire_webhook(url, camera.get("webhook_secret") or "", payload)
-        detail["webhook"] = {"ok": ok, "message": message}
+        ok, message, attempts = fire_webhook(
+            url, camera.get("webhook_secret") or "", payload
+        )
+        detail["webhook"] = {"ok": ok, "message": message, "attempts": attempts}
         if not ok:
             _LOGGER.warning(
                 "webhook delivery failed for %s (%s): %s",

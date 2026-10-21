@@ -168,13 +168,14 @@ async def vision_json(
 IDENTIFY_SYSTEM = (
     "You are WatchDog, a face-match analyst for a private security camera. "
     "You receive enrolled reference photos first, in the order of the listed names, "
-    "then a zoomed crop of the face detected in the live frame (when available). "
-    "Compare only the faces. Reply with JSON only, no prose."
+    "then one live image: a zoomed face crop, a head crop, or the camera frame when "
+    "no face could be isolated. Compare the live subject with the references. "
+    "Reply with JSON only, no prose."
 )
 
 IDENTIFY_PROMPT_TEMPLATE = (
     "Enrolled references in image order: {names}.\n"
-    "The last image{extra} is the cropped/zoomed live face.\n"
+    "The last image{extra} is the live subject.\n"
     'Return exactly: {{"person_found": true|false, "name": "<exact enrolled name or null>", '
     '"confidence": <integer 0-100>}}.\n'
     'Only return a name when the face clearly matches that enrolled person; otherwise '
@@ -205,7 +206,11 @@ async def identify_with_llm(
         images.append(face_crop)
     elif frame:
         images.append(frame)
-    extra = " (the zoomed live face)" if face_crop else ""
+    extra = (
+        " (the zoomed live face)"
+        if face_crop
+        else " (head crop / camera frame; no isolated face)"
+    )
     prompt = IDENTIFY_PROMPT_TEMPLATE.format(
         names=", ".join(names) if names else "none",
         extra=extra,

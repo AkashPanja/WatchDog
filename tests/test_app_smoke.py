@@ -74,3 +74,28 @@ def test_http_smoke(monkeypatch) -> None:
         assert client.get("/api/cameras").json() == []
         bad_camera = client.post("/api/cameras", json={"name": "No source"})
         assert bad_camera.status_code == 400
+
+
+def test_login_throttle_http(monkeypatch) -> None:
+    from fastapi.testclient import TestClient
+
+    from app.auth import login_throttle
+    from app.config import config
+    from app.main import app
+
+    monkeypatch.setattr(config, "login_max_attempts", 3)
+    login_throttle.clear()
+    try:
+        with TestClient(app) as client:
+            for _ in range(3):
+                bad = client.post(
+                    "/api/login", json={"username": "tester", "password": "wrong"}
+                )
+                assert bad.status_code == 401
+            blocked = client.post(
+                "/api/login", json={"username": "tester", "password": "secret"}
+            )
+            assert blocked.status_code == 429
+            assert int(blocked.headers["Retry-After"]) >= 1
+    finally:
+        login_throttle.clear()

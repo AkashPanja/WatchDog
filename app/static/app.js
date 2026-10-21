@@ -378,6 +378,10 @@ function openCameraDialog(camera = null) {
   $("#camera-onvif-pass").value = "";
   $("#camera-onvif-pass").placeholder = camera && camera.has_onvif_password ? "unchanged" : "";
   $("#camera-rtsp").value = camera ? camera.rtsp_url : "";
+  $("#camera-motion-threshold").value =
+    camera && camera.motion_threshold !== null ? camera.motion_threshold : "";
+  $("#camera-motion-cooldown").value =
+    camera && camera.motion_cooldown !== null ? camera.motion_cooldown : "";
   $("#camera-error").textContent = "";
   $("#discover-results").innerHTML = "";
   $("#discover-status").textContent = "";
@@ -398,6 +402,12 @@ async function submitCamera(event) {
   if (password) body.onvif_password = password;
   const rtsp = $("#camera-rtsp").value.trim();
   if (rtsp) body.rtsp_url = rtsp;
+  const motionThreshold = $("#camera-motion-threshold").value;
+  if (motionThreshold !== "") body.motion_threshold = Number(motionThreshold);
+  else if (id) body.motion_threshold = null;
+  const motionCooldown = $("#camera-motion-cooldown").value;
+  if (motionCooldown !== "") body.motion_cooldown = Number(motionCooldown);
+  else if (id) body.motion_cooldown = null;
   try {
     if (id) {
       await api(`/api/cameras/${id}`, { method: "PUT", body });

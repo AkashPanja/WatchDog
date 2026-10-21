@@ -69,6 +69,9 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
   zone/mode/webhook changes apply live.
 - **FR-CAM-7** Passwords are write-only in the API/UI: responses expose only
   `has_onvif_password` / `has_webhook_secret`.
+- **FR-CAM-8** Optional per-camera motion overrides: `motion_threshold` (0.001–1) and
+  `motion_cooldown` (0–3600 s). Unset means the global env default. They apply live and
+  older databases are migrated in place on startup (columns added automatically).
 
 ### 3.2 ONVIF discovery
 
@@ -143,8 +146,10 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 
 - **FR-MOT-1** Motion is computed on a downscaled grayscale frame (320 px wide) against the
   previous frame, masked to the zone.
-- **FR-MOT-2** A trigger fires when ratio ≥ `MOTION_THRESHOLD` (default 0.02 = 2 %) and
-  at least `MOTION_COOLDOWN` seconds (default 15) passed since the last trigger.
+- **FR-MOT-2** A trigger fires when ratio ≥ the effective threshold (per-camera
+  `motion_threshold`, else `MOTION_THRESHOLD` default 0.02 = 2 %) and at least the
+  effective cooldown (per-camera `motion_cooldown`, else `MOTION_COOLDOWN` default 15 s)
+  passed since the last trigger.
 - **FR-MOT-3** Every trigger emits a `motion` event (webhook + event log) with confidence
   = ratio × 100 and a base64 JPEG snapshot of the triggering frame.
 - **FR-MOT-4** A `human` event follows when the engine decides a person is inside the zone:
@@ -177,9 +182,11 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 - **FR-ID-2** Local matching: SCRFD → ArcFace embedding → cosine similarity against the
   gallery; `confidence = 100 × sigmoid((similarity − 0.55) / 0.06)`; best person wins.
 - **FR-ID-3** `match = confidence ≥ person.threshold` (per-person, default 95 ≈ similarity 0.73).
-- **FR-ID-4** LLM matching: references (up to **8** photos, first photo per person) plus the
-  zoomed live face; returned name must be an **enrolled name**, otherwise treated as no
-  match (hallucination guard); `match` requires the person's threshold to be met.
+- **FR-ID-4** LLM matching: references (up to **8** photos, first photo per person) plus one
+  live image — the zoomed face crop when a face is isolated, else the head crop of the
+  closest person, else the newest frame (shrunk) — so the model never receives references
+  without a live image. The returned name must be an **enrolled name**, otherwise treated
+  as no match (hallucination guard); `match` requires the person's threshold to be met.
 - **FR-ID-5** Response: `match`, `name`, `confidence`, `threshold_used`, `human_detected`,
   `face_crop_b64` (preview of the exact crop used), `source` (`python`/`llm`).
 - **FR-ID-6** Identification failures degrade gracefully (no match + reason logged), never
@@ -191,11 +198,14 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 - **FR-WH-1** Per-camera webhook URL + optional shared secret (sent as `X-WatchDog-Secret`).
 - **FR-WH-2** Payload: `event` (`motion`|`human`), `camera_id`, `camera_name`,
   `timestamp` (ISO-8601 UTC), `confidence`, `snapshot_b64` (JPEG, may be null).
-- **FR-WH-3** Delivery timeout `WEBHOOK_TIMEOUT` (default 10 s); failures are logged and
-  stored in the event detail but never block detection.
+- **FR-WH-3** Delivery timeout `WEBHOOK_TIMEOUT` (default 10 s); retries transient
+  failures up to `WEBHOOK_RETRIES` times (default 2; only network errors, 429 and 5xx —
+  other 4xx are final) with a short exponential back-off. Failures are logged and stored
+  in the event detail (including the attempt count) and never abort detection.
 - **FR-WH-4** Every event is logged in SQLite with delivery status; the newest **200**
   events are retained.
-- **FR-WH-5** There is no automatic retry of failed webhooks (fire-and-forget semantics).
+- **FR-WH-5** Retries run inline in the camera's detection thread, so a dead receiver can
+  delay that camera's next detection by up to the retry budget (bounded by 2 s per wait).
 
 ### 3.10 Settings & LLM
 
@@ -225,6 +235,10 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
   responses; LLM keys are write-only.
 - **FR-AUTH-7** Threat model: single-user LAN deployment; credentials are stored locally
   (not hashed) — the DB and env must be protected by the host.
+- **FR-AUTH-8** Failed logins are rate-limited per client IP: after
+  `LOGIN_MAX_ATTEMPTS` (default 10) failures inside `LOGIN_WINDOW_SECONDS` (default 300),
+  logins return **429** with `Retry-After` until the window expires. A successful login
+  clears the counter.
 
 ### 3.12 UI
 
@@ -259,7 +273,7 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 | GET | `/me` | Current user |
 | GET | `/health` | Liveness (public) |
 | GET | `/cameras` | List cameras |
-| POST | `/cameras` | Create camera (name, mode, host, port, onvif_username, onvif_password, rtsp_url) |
+| POST | `/cameras` | Create camera (name, mode, host, port, onvif_username, onvif_password, rtsp_url, motion_threshold?, motion_cooldown?) |
 | PUT | `/cameras/{id}` | Update camera |
 | DELETE | `/cameras/{id}` | Delete camera + its HLS data |
 | GET | `/cameras/discover` | WS-Discovery probe (`?timeout=3`) |
@@ -306,6 +320,9 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 | `MOTION_THRESHOLD` | `0.02` | Motion ratio to trigger |
 | `MOTION_COOLDOWN` | `15` | Seconds between triggers |
 | `WEBHOOK_TIMEOUT` | `10` | Webhook timeout (s) |
+| `WEBHOOK_RETRIES` | `2` | Retries for transient webhook failures |
+| `LOGIN_MAX_ATTEMPTS` | `10` | Failed logins per IP before lockout |
+| `LOGIN_WINDOW_SECONDS` | `300` | Failure-counting window / lockout duration |
 | `LLM_TIMEOUT` | `60` | LLM request timeout (s) |
 | `WATCHDOG_PORT` | `8099` | Published host port (compose) |
 | `TZ` | `UTC` | Container timezone |
@@ -320,8 +337,8 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 - **NFR-3** Memory: bounded HLS window and 15-frame buffer per camera; event log capped at 200.
 - **NFR-4** Crash-resilience: a dead camera/stream/LLM/webhook must never take down the app.
 - **NFR-5** All logs to stderr with standard levels; no secrets in logs.
-- **NFR-6** Repo is lint-clean (`ruff`) and unit-tested (`pytest`): 26 tests, 1 skipped
-  when vision deps are absent. CI builds/publishes the image.
+- **NFR-6** Repo is lint-clean (`ruff`) and unit-tested (`pytest`): 41 tests, 1 skipped
+  when local vision deps are absent. CI builds/publishes the image.
 - **NFR-7** Time handling: UTC everywhere internally; ISO-8601 in payloads; `TZ` only
   affects container logs.
 
@@ -344,6 +361,8 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 - **L-7** Identification is threshold-based; per-person threshold must be tuned per camera
   distance/lighting.
 - **L-8** Single uvicorn worker is mandatory; multiple workers would duplicate streams.
+- **L-9** Login throttling is in-memory and per-process (resets on restart) and keys on the
+  direct client address; deploy behind a trusted proxy only if you accept that.
 
 ---
 
@@ -364,6 +383,13 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 9. Killing ffmpeg or unplugging the camera shows "retrying" and recovers automatically
    without restarting the container.
 10. All `/api/*` calls except health/login require a session cookie.
+11. A per-camera `motion_threshold` override changes sensitivity immediately while the
+    global default still applies to cameras without overrides; an upgraded database gains
+    the new columns on startup.
+12. A receiver returning 503 twice then 200 gets one webhook call after retries, with
+    `attempts=3` recorded on the event; a 400 is not retried.
+13. After repeated bad passwords, login returns 429 with `Retry-After`; after the window
+    (or a restart) login works again.
 
 ---
 

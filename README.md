@@ -66,9 +66,12 @@ CI builds and pushes the image automatically on every `v*` tag and every push to
 | `ANALYSIS_WIDTH` | `1280` | Width of analysis frames |
 | `FRAME_BUFFER_FRAMES` | `15` | Analysis frames kept in memory and scanned on a trigger |
 | `FACE_CROP_SIZE` | `512` | Minimum size the cropped/zoomed face is enlarged to before it goes to the LLM |
-| `MOTION_THRESHOLD` | `0.02` | Fraction of zone pixels changed to count as motion |
-| `MOTION_COOLDOWN` | `15` | Seconds between motion webhooks per camera |
+| `MOTION_THRESHOLD` | `0.02` | Default fraction of zone pixels changed to count as motion (per-camera override in the camera dialog) |
+| `MOTION_COOLDOWN` | `15` | Default seconds between motion webhooks (per-camera override in the camera dialog) |
 | `WEBHOOK_TIMEOUT` | `10` | Webhook HTTP timeout |
+| `WEBHOOK_RETRIES` | `2` | Retries for transient webhook failures (5xx/429/network; 4xx is final) |
+| `LOGIN_MAX_ATTEMPTS` | `10` | Failed logins per client IP before a temporary lockout |
+| `LOGIN_WINDOW_SECONDS` | `300` | Window for counting failed logins / lockout duration |
 | `LLM_TIMEOUT` | `60` | LLM request timeout |
 | `TZ` | `UTC` | Container timezone |
 
@@ -84,7 +87,10 @@ CI builds and pushes the image automatically on every `v*` tag and every push to
    the last 5 minutes; older segments are deleted automatically.
 3. **Edit zone** → click points on the video (min 3) → **Save zone**. With no zone the
    whole frame counts. Double-click ends drawing.
-4. **Webhook** → URL plus optional shared secret (sent as `X-WatchDog-Secret`).
+   Motion **threshold** and **cooldown** can be overridden per camera in the same dialog
+   (blank = the `MOTION_*` environment defaults); changes apply without a stream restart.
+4. **Webhook** → URL plus optional shared secret (sent as `X-WatchDog-Secret`);
+   transient failures are retried (`WEBHOOK_RETRIES`), final status is stored on the event.
 5. **Identify** → runs identification for that camera and shows match, name, confidence,
    source, threshold and a cropped face image.
 
@@ -139,7 +145,8 @@ GET    /api/me
 
 GET    /api/cameras                    list cameras
 POST   /api/cameras                    {name, mode, host, port, onvif_username,
-                                        onvif_password, rtsp_url?}
+                                        onvif_password, rtsp_url?,
+                                        motion_threshold?, motion_cooldown?}
 PUT    /api/cameras/{id}
 DELETE /api/cameras/{id}
 POST   /api/cameras/test-onvif         {host, port, username, password} → {rtsp_url}

@@ -32,6 +32,12 @@ class Camera(Base):
     zone: Mapped[str] = mapped_column(Text, default="[]")
     webhook_url: Mapped[str] = mapped_column(String(500), default="")
     webhook_secret: Mapped[str] = mapped_column(String(200), default="")
+    motion_threshold: Mapped[float | None] = mapped_column(
+        Float, nullable=True, default=None
+    )
+    motion_cooldown: Mapped[float | None] = mapped_column(
+        Float, nullable=True, default=None
+    )
     created_at: Mapped[datetime] = mapped_column(DateTime(timezone=True), default=utcnow)
 
     @property
@@ -65,6 +71,8 @@ class Camera(Base):
             "zone": self.zone_polygon,
             "webhook_url": self.webhook_url,
             "has_webhook_secret": bool(self.webhook_secret),
+            "motion_threshold": self.motion_threshold,
+            "motion_cooldown": self.motion_cooldown,
         }
 
 

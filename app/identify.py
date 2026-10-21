@@ -1,13 +1,16 @@
 """Person identification: local, LLM or hybrid per-camera modes.
 
 On every call the buffered analysis frames of the camera are scanned, the best
-(clearest/largest) face is picked, cropped and zoomed. The LLM then receives the
-enrolled references, the full frame and that zoomed crop for a more accurate verdict.
+(clearest/largest) face is picked, cropped and zoomed. The LLM receives the enrolled
+references plus that zoomed crop. When no face can be isolated it receives the head
+crop of the closest person, or the newest frame as a last resort, so a verdict is
+still possible for masked/turned-away subjects.
 """
 
 from __future__ import annotations
 
 import asyncio
+import base64
 import logging
 import time
 
@@ -26,6 +29,7 @@ LLM_ESCALATION_MARGIN = 10.0
 MAX_LLM_REFERENCES = 8
 LLM_IMAGE_WIDTH = 900
 MAX_FACE_CANDIDATES = 3
+FALLBACK_FRAMES = 3
 
 
 class IdentifyError(Exception):
@@ -183,6 +187,28 @@ def _reference_images(gallery: list[dict]) -> list[tuple[str, bytes]]:
     return references
 
 
+def _fallback_image(frames: list[bytes]) -> bytes | None:
+    """Head crop of the closest person, else the newest frame (no face found)."""
+    for data in reversed(frames[-FALLBACK_FRAMES:]):
+        image = vision.decode_jpeg(data)
+        if image is None:
+            continue
+        try:
+            persons = vision.persons_in_zone(image, [], confidence=0.3)
+        except Exception:  # noqa: BLE001 - fall back to the plain frame
+            persons = []
+        persons.sort(
+            key=lambda box: (box[2] - box[0]) * (box[3] - box[1]), reverse=True
+        )
+        for box in persons:
+            crop = face.crop_person_head_bytes(image, list(box[:4]))
+            if crop:
+                return crop
+    if frames:
+        return _shrink(frames[-1])
+    return None
+
+
 async def _identify_llm(frames: list[bytes], gallery: list[dict]) -> dict:
     if not gallery:
         raise IdentifyError("no enrolled persons")
@@ -193,11 +219,19 @@ async def _identify_llm(frames: list[bytes], gallery: list[dict]) -> dict:
         crop_bytes = face.crop_face_bytes(image, detected["bbox"])
         crop_b64 = face.crop_face_b64(image, detected["bbox"])
     else:
-        crop_bytes = None
-        crop_b64 = None
+        crop_bytes = _fallback_image(frames)
+        crop_b64 = (
+            base64.b64encode(crop_bytes).decode("ascii")
+            if crop_bytes is not None
+            else None
+        )
 
+    if candidates:
+        frame_arg, face_arg = None, crop_bytes
+    else:
+        frame_arg, face_arg = crop_bytes, None
     verdict = await llm.identify_with_llm(
-        None, _reference_images(gallery), crop_bytes
+        frame_arg, _reference_images(gallery), face_arg
     )
     result = _verdict_to_result(verdict, gallery, source="llm")
     result["face_crop_b64"] = crop_b64

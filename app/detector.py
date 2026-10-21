@@ -14,6 +14,7 @@ import numpy as np
 from . import face, llm, vision, webhook
 from .config import config
 from .geometry import face_rank
+from .limits import motion_limits
 
 _LOGGER = logging.getLogger("watchdog.detector")
 
@@ -68,11 +69,12 @@ class CameraWorker(threading.Thread):
             ratio = vision.motion_ratio(self._previous_gray, gray, mask)
         self._previous_gray = gray
 
-        if ratio < config.motion_threshold:
+        threshold, cooldown = motion_limits(self.camera)
+        if ratio < threshold:
             return
 
         now = time.monotonic()
-        if now - self._last_trigger < config.motion_cooldown:
+        if now - self._last_trigger < cooldown:
             return
         self._last_trigger = now
 

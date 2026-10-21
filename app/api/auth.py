@@ -9,6 +9,7 @@ from ..auth import (
     COOKIE_NAME,
     create_session,
     credentials_ok,
+    login_throttle,
     verify_session,
 )
 from ..config import config
@@ -22,9 +23,19 @@ class LoginPayload(BaseModel):
 
 
 @router.post("/login")
-def login(payload: LoginPayload, response: Response) -> dict:
+def login(payload: LoginPayload, request: Request, response: Response) -> dict:
+    client = request.client.host if request.client else "unknown"
+    retry_after = login_throttle.blocked(client)
+    if retry_after > 0:
+        raise HTTPException(
+            status_code=429,
+            detail="too many failed logins, try again later",
+            headers={"Retry-After": str(int(retry_after) + 1)},
+        )
     if not credentials_ok(payload.username, payload.password):
+        login_throttle.failure(client)
         raise HTTPException(status_code=401, detail="invalid username or password")
+    login_throttle.reset(client)
     token = create_session(payload.username)
     response.set_cookie(
         COOKIE_NAME,

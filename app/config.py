@@ -43,6 +43,9 @@ class Config:
         self.motion_threshold = _env_float("MOTION_THRESHOLD", 0.02)
         self.motion_cooldown = _env_float("MOTION_COOLDOWN", 15.0)
         self.webhook_timeout = _env_float("WEBHOOK_TIMEOUT", 10.0)
+        self.webhook_retries = max(0, _env_int("WEBHOOK_RETRIES", 2))
+        self.login_max_attempts = max(1, _env_int("LOGIN_MAX_ATTEMPTS", 10))
+        self.login_window_seconds = max(30, _env_int("LOGIN_WINDOW_SECONDS", 300))
         self.llm_timeout = _env_float("LLM_TIMEOUT", 60.0)
         self.frame_max_age = _env_float("FRAME_MAX_AGE", 6.0)
 

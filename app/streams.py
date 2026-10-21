@@ -169,6 +169,21 @@ class CameraStream:
                 time.sleep(2)
 
 
+def _camera_snapshot(camera) -> dict:
+    """Plain dict handed to the stream/detector workers (never an ORM row)."""
+    return {
+        "id": camera.id,
+        "name": camera.name,
+        "mode": camera.mode,
+        "rtsp_url": camera.rtsp_url,
+        "zone": camera.zone_polygon,
+        "webhook_url": camera.webhook_url,
+        "webhook_secret": camera.webhook_secret,
+        "motion_threshold": camera.motion_threshold,
+        "motion_cooldown": camera.motion_cooldown,
+    }
+
+
 class StreamManager:
     """Owns all camera streams and detection workers."""
 
@@ -182,34 +197,13 @@ class StreamManager:
 
         with SessionLocal() as session:
             cameras = session.query(Camera).all()
-            camera_snapshots = [
-                {
-                    "id": camera.id,
-                    "name": camera.name,
-                    "mode": camera.mode,
-                    "rtsp_url": camera.rtsp_url,
-                    "zone": camera.zone_polygon,
-                    "webhook_url": camera.webhook_url,
-                    "webhook_secret": camera.webhook_secret,
-                }
-                for camera in cameras
-            ]
+            camera_snapshots = [_camera_snapshot(camera) for camera in cameras]
         for snapshot in camera_snapshots:
             self._start(snapshot)
 
     def start_camera(self, camera) -> None:
         self._stop_camera(camera.id)
-        self._start(
-            {
-                "id": camera.id,
-                "name": camera.name,
-                "mode": camera.mode,
-                "rtsp_url": camera.rtsp_url,
-                "zone": camera.zone_polygon,
-                "webhook_url": camera.webhook_url,
-                "webhook_secret": camera.webhook_secret,
-            }
-        )
+        self._start(_camera_snapshot(camera))
 
     def update_camera(self, camera) -> None:
         """Apply zone/mode/webhook changes without restarting ffmpeg."""
@@ -217,15 +211,7 @@ class StreamManager:
         if worker is None:
             self.start_camera(camera)
             return
-        worker.camera.update(  # type: ignore[attr-defined]
-            {
-                "name": camera.name,
-                "mode": camera.mode,
-                "zone": camera.zone_polygon,
-                "webhook_url": camera.webhook_url,
-                "webhook_secret": camera.webhook_secret,
-            }
-        )
+        worker.camera.update(_camera_snapshot(camera))  # type: ignore[attr-defined]
 
     def _start(self, snapshot: dict) -> None:
         from .detector import CameraWorker

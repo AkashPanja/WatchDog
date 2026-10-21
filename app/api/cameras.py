@@ -36,6 +36,8 @@ class CameraCreate(BaseModel):
     onvif_username: str = ""
     onvif_password: str = ""
     rtsp_url: str = ""
+    motion_threshold: float | None = Field(default=None, gt=0, le=1)
+    motion_cooldown: float | None = Field(default=None, ge=0, le=3600)
 
 
 class CameraUpdate(BaseModel):
@@ -46,6 +48,8 @@ class CameraUpdate(BaseModel):
     onvif_username: str | None = None
     onvif_password: str | None = None
     rtsp_url: str | None = None
+    motion_threshold: float | None = Field(default=None, gt=0, le=1)
+    motion_cooldown: float | None = Field(default=None, ge=0, le=3600)
 
 
 class ZonePayload(BaseModel):
@@ -141,6 +145,8 @@ async def create_camera(payload: CameraCreate) -> dict:
             onvif_username=payload.onvif_username,
             onvif_password=payload.onvif_password,
             rtsp_url=rtsp_url,
+            motion_threshold=payload.motion_threshold,
+            motion_cooldown=payload.motion_cooldown,
         )
         session.add(camera)
         session.commit()
@@ -179,6 +185,10 @@ async def update_camera(camera_id: str, payload: CameraUpdate) -> dict:
             restream = True
         if payload.rtsp_url is not None:
             camera.rtsp_url = payload.rtsp_url.strip()
+        if "motion_threshold" in payload.model_fields_set:
+            camera.motion_threshold = payload.motion_threshold
+        if "motion_cooldown" in payload.model_fields_set:
+            camera.motion_cooldown = payload.motion_cooldown
         if restream and camera.host and not payload.rtsp_url:
             try:
                 camera.rtsp_url = await resolve_rtsp(
