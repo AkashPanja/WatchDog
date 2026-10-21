@@ -16,14 +16,19 @@ MAX_BUFFER = 8 * 1024 * 1024
 
 
 class CameraStream:
-    """One ffmpeg HLS encoder plus one ffmpeg frame pipe per camera."""
+    """One ffmpeg process per camera: HLS playlist (files) + frame pipe (stdout).
+
+    A single process is deliberate: many consumer cameras (Tapo, Reolink, …)
+    allow only ONE RTSP viewer per stream, so a second ffmpeg connection to
+    the same URL is dropped by the camera. Both outputs are muxed from one
+    RTSP input here.
+    """
 
     def __init__(self, camera_id: str, rtsp_url: str) -> None:
         self.camera_id = camera_id
         self.rtsp_url = rtsp_url
         self.directory = config.hls_dir / camera_id
-        self._hls_process: subprocess.Popen | None = None
-        self._frames_process: subprocess.Popen | None = None
+        self._process: subprocess.Popen | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
         self._frame: bytes | None = None
@@ -45,12 +50,10 @@ class CameraStream:
 
     def stop(self) -> None:
         self._stop.set()
-        self._kill(self._frames_process)
-        self._kill(self._hls_process)
+        self._kill(self._process)
         if self._thread is not None:
             self._thread.join(timeout=5)
-        self._hls_process = None
-        self._frames_process = None
+        self._process = None
 
     def latest_frame(self) -> tuple[bytes | None, float]:
         """Return the newest JPEG frame and its capture monotonic timestamp."""
@@ -74,10 +77,10 @@ class CameraStream:
             except Exception:
                 _LOGGER.debug("could not kill ffmpeg process", exc_info=True)
 
-    def _start_hls(self) -> None:
-        if self._hls_process is not None and self._hls_process.poll() is None:
+    def _start_process(self) -> None:
+        if self._process is not None and self._process.poll() is None:
             return
-        self._kill(self._hls_process)
+        self._kill(self._process)
         codec = (
             [
                 "-c:v", "libx264",
@@ -98,6 +101,8 @@ class CameraStream:
             "tcp",
             "-i",
             self.rtsp_url,
+            # output 1: rolling HLS playlist (browser live view)
+            "-map", "0:v:0",
             "-an",
             *codec,
             "-f",
@@ -111,25 +116,8 @@ class CameraStream:
             "-hls_segment_filename",
             str(self.directory / "seg_%06d.ts"),
             str(self.directory / "index.m3u8"),
-        ]
-        self._hls_process = subprocess.Popen(
-            args, stdout=subprocess.DEVNULL, stderr=subprocess.DEVNULL
-        )
-
-    def _start_frames(self) -> None:
-        if self._frames_process is not None and self._frames_process.poll() is None:
-            return
-        self._kill(self._frames_process)
-        args = [
-            config.ffmpeg_bin,
-            "-hide_banner",
-            "-nostdin",
-            "-loglevel",
-            "error",
-            "-rtsp_transport",
-            "tcp",
-            "-i",
-            self.rtsp_url,
+            # output 2: analysis frames on stdout (same RTSP connection)
+            "-map", "0:v:0",
             "-an",
             "-vf",
             f"fps={config.analysis_fps},scale='min({config.analysis_width},iw)':-2",
@@ -141,17 +129,16 @@ class CameraStream:
             "4",
             "-",
         ]
-        self._frames_process = subprocess.Popen(
+        self._process = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
 
     def _supervise(self) -> None:
         while not self._stop.is_set():
             try:
-                self._start_frames()
-                self._start_hls()
+                self._start_process()
                 buffer = b""
-                process = self._frames_process
+                process = self._process
                 if process is None or process.stdout is None:
                     time.sleep(2)
                     continue
@@ -173,17 +160,13 @@ class CameraStream:
                                 self._recent.append((frame, self._frame_ts))
                     if len(buffer) > MAX_BUFFER:
                         buffer = buffer[-1 << 20 :]
-                    if self._hls_process is not None and self._hls_process.poll() is not None:
-                        self._start_hls()
             except Exception:
                 _LOGGER.exception("stream supervisor error for %s", self.camera_id)
             finally:
-                self._kill(self._frames_process)
-                self._frames_process = None
+                self._kill(self._process)
+                self._process = None
             if not self._stop.is_set():
                 time.sleep(2)
-        self._kill(self._hls_process)
-        self._hls_process = None
 
 
 class StreamManager:

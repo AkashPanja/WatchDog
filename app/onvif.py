@@ -5,6 +5,7 @@ from __future__ import annotations
 import asyncio
 import inspect
 import logging
+from urllib.parse import quote, urlsplit, urlunsplit
 
 _LOGGER = logging.getLogger(__name__)
 
@@ -17,6 +18,30 @@ async def _maybe_await(value):
     if inspect.isawaitable(value):
         return await value
     return value
+
+
+def with_credentials(uri: str, username: str, password: str) -> str:
+    """Embed ``username``/``password`` into an RTSP URL that lacks them.
+
+    Many cameras (Tapo included) return the stream URI without userinfo even
+    though the stream itself requires digest auth. The URL is what ffmpeg
+    receives, so credentials must live in it. Already-credentialed URLs and
+    URLs without a host are returned unchanged.
+    """
+    if not username:
+        return uri
+    parts = urlsplit(uri)
+    if parts.scheme not in ("rtsp", "rtsps") or not parts.hostname:
+        return uri
+    if parts.username is not None:
+        return uri
+    host = parts.hostname
+    if ":" in host and not host.startswith("["):
+        host = f"[{host}]"
+    netloc = f"{quote(username, safe='')}:{quote(password or '', safe='')}@{host}"
+    if parts.port:
+        netloc += f":{parts.port}"
+    return urlunsplit((parts.scheme, netloc, parts.path, parts.query, parts.fragment))
 
 
 async def resolve_rtsp(
@@ -58,7 +83,7 @@ async def resolve_rtsp(
         uri = getattr(result, "Uri", "") or ""
         if not uri:
             raise OnvifError("camera returned an empty stream URI")
-        return uri
+        return with_credentials(uri, username, password)
     except OnvifError:
         raise
     except Exception as err:  # - surface a readable message
