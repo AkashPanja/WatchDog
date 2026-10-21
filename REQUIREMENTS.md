@@ -161,10 +161,11 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
   3. pick the best face by **area × detector score**;
   4. crop with 40 % padding and upscale so the shorter side ≥ `FACE_CROP_SIZE`
      (default 512 px), JPEG q90;
-  5. send **only that cropped/zoomed face** (plus enrolled references for identify) to
-     the LLM — never the full frame;
-  6. fallback: upper 45 % of the best person box; with no person, the full frame is used
-     only for zone-context decisions.
+  5. send that cropped/zoomed face (plus enrolled references for identify) to the LLM —
+     not the full frame;
+  6. fallback: upper 45 % of the best person box (head crop); for the human verdict, no
+     person means "not present" and no image is sent; for identification, if neither a
+     face nor a person is found, the newest frame is sent so a verdict is still possible.
 
 ### 3.7 People enrollment
 
@@ -372,8 +373,9 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 2. With a zone set, motion outside the zone triggers nothing; motion inside triggers a
    `motion` event with snapshot and confidence.
 3. Engine `python`: person inside the zone produces a `human` event; outside the zone does not.
-4. Engine `llm`: the model receives the zoomed face crop (no full frame) and returns a
-   validated verdict; invalid JSON → no match, logged error.
+4. Engine `llm`: the model receives the zoomed face crop (or head/full-frame fallback when
+   no face is isolated) and returns a validated verdict; invalid JSON → no match, logged
+   error.
 5. `hybrid` escalates only on uncertain local results and reports `source`.
 6. Identifying an enrolled person returns `match=true`, correct name, confidence ≥ their
    threshold, and a face preview; unknown faces return `match=false`.

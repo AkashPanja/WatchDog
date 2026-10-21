@@ -131,7 +131,8 @@ Response:
 
 - `match` is `confidence >= threshold_used` (per-person threshold; default 95).
 - `source` is `python` or `llm` (hybrid reports whichever produced the returned verdict).
-- In `llm` and `hybrid` modes the LLM receives only the cropped/zoomed face, so
+- In `llm` and `hybrid` modes the LLM receives only the cropped/zoomed face (falling back
+  to a head crop, then the newest frame when no face can be isolated), so
   `face_crop_b64` is returned for every engine.
 - A returned LLM name that is not enrolled is discarded as a non-match.
 - The rolling 5-minute buffer is recorded for every camera, whatever engine it uses.
@@ -200,8 +201,8 @@ are visible in **Events**.
 - **Trigger pipeline**: when a trigger fires (motion/human or `identify`), the buffered
   analysis frames are scanned, the clearest/largest face is picked, cropped and zoomed
   (padded, upscaled to `FACE_CROP_SIZE`) and sent to the LLM together with the enrolled
-  references — only the zoomed face, no full frame, which gives noticeably more accurate
-  verdicts. If no face is found, the upper part of the best person box is used instead.
+  references — normally only the zoomed face, with a head crop then the newest frame as
+  fallbacks when no face is isolated — which gives noticeably more accurate verdicts.
 - **People (python/hybrid)**: YOLOv8n ONNX person boxes, bbox center/corners tested against
   the zone polygon.
 - **Faces**: SCRFD (`det_10g.onnx`) detection, 5-point alignment, ArcFace (`w600k_r50.onnx`)
