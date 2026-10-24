@@ -15,6 +15,11 @@ _LOGGER = logging.getLogger("watchdog.streams")
 MAX_BUFFER = 8 * 1024 * 1024
 
 
+def stream_stalled(now: float, last_activity: float, timeout: float) -> bool:
+    """True when an ffmpeg process produced nothing for longer than timeout."""
+    return timeout > 0 and now - last_activity > timeout
+
+
 class CameraStream:
     """One ffmpeg process per camera: HLS playlist (files) + frame pipe (stdout).
 
@@ -31,6 +36,8 @@ class CameraStream:
         self._process: subprocess.Popen | None = None
         self._stop = threading.Event()
         self._thread: threading.Thread | None = None
+        self._watchdog: threading.Thread | None = None
+        self._started_ts = 0.0
         self._frame: bytes | None = None
         self._frame_ts = 0.0
         self._recent: deque[tuple[bytes, float]] = deque(
@@ -47,12 +54,18 @@ class CameraStream:
             target=self._supervise, name=f"stream-{self.camera_id}", daemon=True
         )
         self._thread.start()
+        self._watchdog = threading.Thread(
+            target=self._watch_stall, name=f"stall-{self.camera_id}", daemon=True
+        )
+        self._watchdog.start()
 
     def stop(self) -> None:
         self._stop.set()
         self._kill(self._process)
         if self._thread is not None:
             self._thread.join(timeout=5)
+        if self._watchdog is not None:
+            self._watchdog.join(timeout=5)
         self._process = None
 
     def latest_frame(self) -> tuple[bytes | None, float]:
@@ -132,6 +145,25 @@ class CameraStream:
         self._process = subprocess.Popen(
             args, stdout=subprocess.PIPE, stderr=subprocess.DEVNULL
         )
+        self._started_ts = time.monotonic()
+
+    def _watch_stall(self) -> None:
+        """Kill a hung ffmpeg (RTSP input frozen) so the supervisor reconnects."""
+        while not self._stop.wait(5.0):
+            process = self._process
+            if process is None or process.poll() is not None:
+                continue
+            with self._lock:
+                last_activity = max(self._frame_ts, self._started_ts)
+            if stream_stalled(
+                time.monotonic(), last_activity, config.stream_stall_seconds
+            ):
+                _LOGGER.warning(
+                    "stream stalled for %s (no frames in %ss), reconnecting",
+                    self.camera_id,
+                    config.stream_stall_seconds,
+                )
+                self._kill(process)
 
     def _supervise(self) -> None:
         while not self._stop.is_set():

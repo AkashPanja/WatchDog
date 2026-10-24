@@ -64,6 +64,7 @@ CI builds and pushes the image automatically on every `v*` tag and every push to
 | `HLS_TRANSCODE` | `false` | `true` re-encodes to H.264 (use for HEVC cameras or broken `-c:v copy` streams) |
 | `ANALYSIS_FPS` | `2` | Frames per second pulled for detection/identification |
 | `ANALYSIS_WIDTH` | `1280` | Width of analysis frames |
+| `STREAM_STALL_SECONDS` | `30` | Restart ffmpeg when no frames arrive for this long (hung RTSP); `0` disables |
 | `FRAME_BUFFER_FRAMES` | `15` | Analysis frames kept in memory and scanned on a trigger |
 | `FACE_CROP_SIZE` | `512` | Minimum size the cropped/zoomed face is enlarged to before it goes to the LLM |
 | `MOTION_THRESHOLD` | `0.02` | Default fraction of zone pixels changed to count as motion (per-camera override in the camera dialog) |

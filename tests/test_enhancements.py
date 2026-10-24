@@ -8,6 +8,7 @@ from app import auth, limits, webhook
 from app.config import config
 from app.db import CAMERA_ADDITIONS, ensure_columns
 from app.models import Camera
+from app.streams import stream_stalled
 
 
 def test_motion_limits_use_global_defaults(monkeypatch) -> None:
@@ -149,3 +150,10 @@ def test_login_throttle_blocks_after_limit(monkeypatch) -> None:
     throttle.failure("1.2.3.4")
     throttle.reset("1.2.3.4")
     assert throttle.blocked("1.2.3.4") == 0.0
+
+
+def test_stream_stall_detection() -> None:
+    assert stream_stalled(100.0, 90.0, 30.0) is False
+    assert stream_stalled(120.0, 90.0, 30.0) is False
+    assert stream_stalled(120.1, 90.0, 30.0) is True
+    assert stream_stalled(999.0, 0.0, 0.0) is False

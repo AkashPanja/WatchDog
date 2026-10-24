@@ -348,3 +348,13 @@ async def test_onvif(payload: OnvifTestPayload) -> dict:
             status_code=400, detail=f"ONVIF connection failed: {err}"
         ) from err
     return {"rtsp_url": uri}
+
+
+@router.get("/{camera_id}/{filename}")
+def hls_segment_relative(camera_id: str, filename: str) -> FileResponse:
+    """Serve playlist-relative segments: /stream.m3u8 resolves next to itself."""
+    if not SegmentName.match(filename):
+        raise HTTPException(status_code=404, detail="not found")
+    if filename == "index.m3u8":
+        return stream_playlist(camera_id)
+    return hls_segment(camera_id, filename)

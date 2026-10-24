@@ -96,7 +96,9 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
   `GET /api/cameras/{id}/snapshot.jpg`.
 - **FR-STR-4** Stream supervision: if ffmpeg exits, restart after a 2 s back-off,
   indefinitely, without crashing the app; stale frames older than `FRAME_MAX_AGE`
-  (default 6 s) are ignored by detection.
+  (default 6 s) are ignored by detection. A stall watchdog also restarts ffmpeg when a
+  live process produces no frames for `STREAM_STALL_SECONDS` (default 30, 0 disables),
+  which covers RTSP connections that freeze without closing (camera reboot/Wi-Fi loss).
 - **FR-STR-5** HLS is copied (no re-encode) by default; `HLS_TRANSCODE=true` switches the
   playlist to libx264/2500k for cameras whose codec browsers cannot play (e.g. HEVC).
 - **FR-STR-6** The UI live view uses hls.js, keeps the last 5 minutes seekable, and shows
@@ -106,6 +108,9 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 - **FR-STR-8** Camera viewer limits are respected: one viewer per stream is the
   documented baseline (see §7), so the app must not open additional connections to the
   same URL (no second ffmpeg, no per-request ffmpeg probing).
+- **FR-STR-9** The playlist must be playable both from `…/stream.m3u8` and
+  `…/hls/index.m3u8`; playlist-relative segment URLs (resolved next to the playlist) are
+  served so players that do not rewrite the base URL still work.
 
 ### 3.4 Detection area (zone)
 
@@ -315,6 +320,7 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 | `HLS_TRANSCODE` | `false` | Re-encode HLS with libx264 (HEVC/browser fixes) |
 | `ANALYSIS_FPS` | `2` | Frames/s for detection |
 | `ANALYSIS_WIDTH` | `1280` | Max analysis frame width |
+| `STREAM_STALL_SECONDS` | `30` | Restart ffmpeg if no frames arrive (0 disables) |
 | `FRAME_BUFFER_FRAMES` | `15` | Ring buffer size for triggers |
 | `FRAME_MAX_AGE` | `6` | Ignore frames older than this (s) |
 | `FACE_CROP_SIZE` | `512` | Minimum face-crop side after zoom |
@@ -338,7 +344,7 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 - **NFR-3** Memory: bounded HLS window and 15-frame buffer per camera; event log capped at 200.
 - **NFR-4** Crash-resilience: a dead camera/stream/LLM/webhook must never take down the app.
 - **NFR-5** All logs to stderr with standard levels; no secrets in logs.
-- **NFR-6** Repo is lint-clean (`ruff`) and unit-tested (`pytest`): 41 tests, 1 skipped
+- **NFR-6** Repo is lint-clean (`ruff`) and unit-tested (`pytest`): 43 tests, 1 skipped
   when local vision deps are absent. CI builds/publishes the image.
 - **NFR-7** Time handling: UTC everywhere internally; ISO-8601 in payloads; `TZ` only
   affects container logs.
@@ -392,6 +398,9 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
     `attempts=3` recorded on the event; a 400 is not retried.
 13. After repeated bad passwords, login returns 429 with `Retry-After`; after the window
     (or a restart) login works again.
+14. If the RTSP feed freezes without closing, the stall watchdog restarts ffmpeg within
+    ~`STREAM_STALL_SECONDS` + 5 s and the playlist advances again.
+15. A player loading `/stream.m3u8` fetches `seg_*.ts` next to it successfully (no 404s).
 
 ---
 

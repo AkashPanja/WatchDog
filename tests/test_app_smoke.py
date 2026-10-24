@@ -99,3 +99,24 @@ def test_login_throttle_http(monkeypatch) -> None:
             assert int(blocked.headers["Retry-After"]) >= 1
     finally:
         login_throttle.clear()
+
+
+def test_relative_hls_paths() -> None:
+    from fastapi.testclient import TestClient
+
+    from app.config import config
+    from app.main import app
+
+    directory = config.hls_dir / "smoke-cam"
+    directory.mkdir(parents=True, exist_ok=True)
+    (directory / "seg_000001.ts").write_bytes(b"TS")
+    (directory / "index.m3u8").write_text("#EXTM3U\n")
+
+    with TestClient(app) as client:
+        client.post("/api/login", json={"username": "tester", "password": "secret"})
+        segment = client.get("/api/cameras/smoke-cam/seg_000001.ts")
+        assert segment.status_code == 200
+        assert segment.content == b"TS"
+        playlist = client.get("/api/cameras/smoke-cam/stream.m3u8")
+        assert playlist.status_code == 200
+        assert playlist.text.startswith("#EXTM3U")

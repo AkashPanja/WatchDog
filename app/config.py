@@ -37,6 +37,7 @@ class Config:
         self.hls_transcode = os.environ.get("HLS_TRANSCODE", "false").lower() == "true"
         self.hls_window_seconds = max(30, _env_int("HLS_WINDOW_SECONDS", 300))
         self.analysis_fps = max(1, _env_int("ANALYSIS_FPS", 2))
+        self.stream_stall_seconds = max(0, _env_int("STREAM_STALL_SECONDS", 30))
         self.frame_buffer_frames = max(3, _env_int("FRAME_BUFFER_FRAMES", 15))
         self.face_crop_size = max(160, _env_int("FACE_CROP_SIZE", 512))
         self.analysis_width = max(320, _env_int("ANALYSIS_WIDTH", 1280))
