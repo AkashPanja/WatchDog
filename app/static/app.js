@@ -5,8 +5,6 @@ const state = {
   persons: [],
   settings: null,
   hls: [],
-  zones: {},
-  drawing: {},
 };
 
 const $ = (selector) => document.querySelector(selector);
@@ -110,9 +108,6 @@ function renderCameras() {
   $("#cameras-empty").classList.toggle("hidden", state.cameras.length > 0);
 
   for (const camera of state.cameras) {
-    state.zones[camera.id] = camera.zone.slice();
-    state.drawing[camera.id] = false;
-
     const card = document.createElement("div");
     card.className = "card camera-card";
     card.innerHTML = `
@@ -128,50 +123,37 @@ function renderCameras() {
       <div class="camera-actions">
         <button class="primary small" data-act="identify">Identify</button>
         <button class="small" data-act="zone">Edit zone</button>
-        <button class="small hidden" data-act="zone-save">Save zone</button>
-        <button class="small hidden" data-act="zone-cancel">Cancel</button>
         <button class="small" data-act="webhook">Webhook</button>
         <button class="small" data-act="edit">Edit</button>
         <button class="small danger" data-act="delete">Delete</button>
       </div>
       <div class="camera-meta">
         ${camera.webhook_url ? "webhook configured" : "no webhook"} ·
-        ${camera.zone.length >= 3 ? "zone marked" : "whole frame"}
+        ${
+          camera.zone.length >= 3
+            ? `zone · ${(ZoneGeometry.polygonArea(camera.zone) * 100).toFixed(0)}% of frame`
+            : "whole frame"
+        }
       </div>`;
     card.querySelector("h3").textContent = camera.name;
 
-    const wrap = card.querySelector(".video-wrap");
     const video = card.querySelector("video");
     const canvas = card.querySelector("canvas");
     const status = card.querySelector(".video-status");
 
     attachStream(video, status, camera.id);
-    canvas.addEventListener("pointerdown", (event) =>
-      addZonePoint(event, camera, canvas, card)
-    );
-    canvas.addEventListener("pointermove", () => drawZone(camera, canvas));
-    canvas.addEventListener("dblclick", () => finishZone(camera, card));
-    window.addEventListener("resize", () => drawZone(camera, canvas));
 
     card.addEventListener("click", (event) => {
       const action = event.target.dataset.act;
       if (!action) return;
       if (action === "identify") identifyCamera(camera);
-      if (action === "zone") startZone(camera, card);
-      if (action === "zone-save") saveZone(camera, card);
-      if (action === "zone-cancel") {
-        state.drawing[camera.id] = false;
-        state.zones[camera.id] = camera.zone.slice();
-        card.querySelector(".video-wrap").classList.remove("drawing");
-        toggleZoneButtons(card, false);
-        drawZone(camera, canvas);
-      }
+      if (action === "zone") openZoneDialog(camera);
       if (action === "webhook") editWebhook(camera);
       if (action === "edit") openCameraDialog(camera);
       if (action === "delete") deleteCamera(camera);
     });
 
-    requestAnimationFrame(() => drawZone(camera, canvas));
+    requestAnimationFrame(() => drawSavedZone(camera, canvas));
     grid.appendChild(card);
   }
 }
@@ -197,102 +179,529 @@ function attachStream(video, status, cameraId) {
   video.play().catch(() => {});
 }
 
-function canvasPoint(event, canvas) {
-  const rect = canvas.getBoundingClientRect();
-  return [
-    Math.min(1, Math.max(0, (event.clientX - rect.left) / rect.width)),
-    Math.min(1, Math.max(0, (event.clientY - rect.top) / rect.height)),
-  ];
+/* ------------------------------ zone editor ------------------------------ */
+
+const zoneEditor = {
+  camera: null,
+  points: [],
+  tool: "polygon",
+  snap: true,
+  undoStack: [],
+  redoStack: [],
+  rectUndo: null,
+  dirty: false,
+  drawing: false,
+  dragIndex: -1,
+  hoverIndex: -1,
+  rectStart: null,
+  rectCurrent: null,
+  pointer: null,
+  lastClick: null,
+  imageReady: false,
+};
+
+function zoneSnapshot() {
+  return zoneEditor.points.map((point) => [point[0], point[1]]);
 }
 
-function drawZone(camera, canvas) {
+function zonePushUndo() {
+  zoneEditor.undoStack.push(zoneSnapshot());
+  if (zoneEditor.undoStack.length > 60) zoneEditor.undoStack.shift();
+  zoneEditor.redoStack = [];
+}
+
+function zoneMarkDirty() {
+  zoneEditor.dirty = true;
+  updateZoneStatus();
+}
+
+function zonePoint(event) {
+  const canvas = $("#zone-canvas");
   const rect = canvas.getBoundingClientRect();
+  let point = [
+    (event.clientX - rect.left) / Math.max(1, rect.width),
+    (event.clientY - rect.top) / Math.max(1, rect.height),
+  ];
+  point = [
+    ZoneGeometry.clamp(point[0], 0, 1),
+    ZoneGeometry.clamp(point[1], 0, 1),
+  ];
+  return zoneEditor.snap ? ZoneGeometry.snapPoint(point, 0.01) : point;
+}
+
+function zoneCanvas() {
+  const canvas = $("#zone-canvas");
+  const image = $("#zone-image");
+  const width = Math.max(1, image.clientWidth || canvas.parentElement.clientWidth);
+  const height = Math.max(1, image.clientHeight || Math.round(width * 0.5625));
+  if (canvas.width !== width || canvas.height !== height) {
+    canvas.width = width;
+    canvas.height = height;
+  }
+  return { canvas, width, height };
+}
+
+function zonePixels(point, width, height) {
+  return [point[0] * width, point[1] * height];
+}
+
+function zoneHitVertex(event) {
+  const { width, height } = zoneCanvas();
+  const point = zonePoint(event);
+  const [px, py] = zonePixels(point, width, height);
+  for (let index = 0; index < zoneEditor.points.length; index += 1) {
+    const [vx, vy] = zonePixels(zoneEditor.points[index], width, height);
+    if (Math.hypot(px - vx, py - vy) <= 12) return index;
+  }
+  return -1;
+}
+
+function zoneNearestEdge(event) {
+  const { width, height } = zoneCanvas();
+  const point = zonePoint(event);
+  const [px, py] = zonePixels(point, width, height);
+  let best = null;
+  const points = zoneEditor.points;
+  for (let index = 0; index < points.length; index += 1) {
+    const [ax, ay] = zonePixels(points[index], width, height);
+    const [bx, by] = zonePixels(points[(index + 1) % points.length], width, height);
+    const hit = ZoneGeometry.distanceToSegment([px, py], [ax, ay], [bx, by]);
+    if (hit.distance <= 10 && (best === null || hit.distance < best.distance)) {
+      best = { index, distance: hit.distance, point: [hit.point[0] / width, hit.point[1] / height] };
+    }
+  }
+  return best;
+}
+
+function zoneTrace(ctx, points, width, height, close) {
+  ctx.beginPath();
+  points.forEach(([x, y], index) => {
+    const [px, py] = zonePixels([x, y], width, height);
+    if (index === 0) ctx.moveTo(px, py);
+    else ctx.lineTo(px, py);
+  });
+  if (close) ctx.closePath();
+}
+
+function drawZoneEditor() {
+  const { canvas, width, height } = zoneCanvas();
+  const ctx = canvas.getContext("2d");
+  ctx.clearRect(0, 0, width, height);
+  if (!zoneEditor.imageReady) return;
+
+  if (zoneEditor.snap) {
+    ctx.strokeStyle = "rgba(255, 255, 255, 0.06)";
+    ctx.lineWidth = 1;
+    for (let step = 1; step < 10; step += 1) {
+      const x = (width * step) / 10;
+      const y = (height * step) / 10;
+      ctx.beginPath();
+      ctx.moveTo(x, 0);
+      ctx.lineTo(x, height);
+      ctx.stroke();
+      ctx.beginPath();
+      ctx.moveTo(0, y);
+      ctx.lineTo(width, y);
+      ctx.stroke();
+    }
+  }
+
+  const points = zoneEditor.points;
+  const closed = points.length >= 3;
+
+  if (closed) {
+    ctx.save();
+    ctx.beginPath();
+    ctx.rect(0, 0, width, height);
+    zoneTrace(ctx, points, width, height, true);
+    ctx.fillStyle = "rgba(0, 0, 0, 0.45)";
+    ctx.fill("evenodd");
+    ctx.restore();
+
+    zoneTrace(ctx, points, width, height, true);
+    ctx.fillStyle = "rgba(245, 166, 35, 0.16)";
+    ctx.fill();
+  }
+
+  zoneTrace(ctx, points, width, height, closed);
+  if (zoneEditor.drawing && zoneEditor.pointer && points.length > 0) {
+    const [lx, ly] = zonePixels(points[points.length - 1], width, height);
+    const [px, py] = zonePixels(zoneEditor.pointer, width, height);
+    ctx.moveTo(lx, ly);
+    ctx.lineTo(px, py);
+  }
+  ctx.strokeStyle = "#f5a623";
+  ctx.lineWidth = 2.5;
+  ctx.stroke();
+
+  if (zoneEditor.rectStart && zoneEditor.rectCurrent) {
+    const rect = ZoneGeometry.rectPoints(zoneEditor.rectStart, zoneEditor.rectCurrent);
+    zoneTrace(ctx, rect, width, height, true);
+    ctx.fillStyle = "rgba(62, 166, 255, 0.15)";
+    ctx.fill();
+    ctx.setLineDash([6, 5]);
+    ctx.strokeStyle = "#3ea6ff";
+    ctx.lineWidth = 2;
+    ctx.stroke();
+    ctx.setLineDash([]);
+  }
+
+  points.forEach((point, index) => {
+    const [px, py] = zonePixels(point, width, height);
+    const active = index === zoneEditor.dragIndex || index === zoneEditor.hoverIndex;
+    ctx.beginPath();
+    ctx.arc(px, py, active ? 7 : 5, 0, Math.PI * 2);
+    ctx.fillStyle = active ? "#3ea6ff" : "#ffffff";
+    ctx.fill();
+    ctx.lineWidth = 2;
+    ctx.strokeStyle = "#0e1116";
+    ctx.stroke();
+  });
+}
+
+function updateZoneStatus() {
+  const points = zoneEditor.points;
+  const area = ZoneGeometry.polygonArea(points);
+  const info = $("#zone-info");
+  info.textContent =
+    points.length === 0
+      ? "Whole frame"
+      : `${points.length} point${points.length === 1 ? "" : "s"} · ${(area * 100).toFixed(1)}% of frame`;
+
+  let warning = "";
+  let blocking = false;
+  if (points.length > 0 && points.length < 3) {
+    warning = "Add at least 3 points, or use Whole frame.";
+    blocking = true;
+  } else if (ZoneGeometry.polygonSelfIntersects(points)) {
+    warning = "Zone edges cross — move or remove a point.";
+    blocking = true;
+  } else if (points.length >= 3 && area < 0.002) {
+    warning = "Very small area — detection may be unreliable.";
+  }
+  $("#zone-warning").textContent = warning;
+  $("#zone-save").disabled = blocking;
+}
+
+function setZoneTool(tool) {
+  zoneEditor.tool = tool;
+  zoneEditor.rectStart = null;
+  zoneEditor.rectCurrent = null;
+  $$("[data-zone-tool]").forEach((button) =>
+    button.classList.toggle("active", button.dataset.zoneTool === tool)
+  );
+  drawZoneEditor();
+}
+
+function loadZoneSnapshot(cameraId) {
+  const image = $("#zone-image");
+  const loading = $("#zone-loading");
+  zoneEditor.imageReady = false;
+  loading.textContent = "Loading snapshot…";
+  loading.classList.remove("hidden");
+  image.onload = () => {
+    zoneEditor.imageReady = true;
+    loading.classList.add("hidden");
+    drawZoneEditor();
+  };
+  image.onerror = () => {
+    loading.textContent = "No snapshot yet — check the stream, then refresh";
+  };
+  image.src = `/api/cameras/${cameraId}/snapshot.jpg?t=${Date.now()}`;
+}
+
+function openZoneDialog(camera) {
+  zoneEditor.camera = camera;
+  zoneEditor.points = camera.zone.map(([x, y]) => [x, y]);
+  zoneEditor.undoStack = [];
+  zoneEditor.redoStack = [];
+  zoneEditor.rectUndo = null;
+  zoneEditor.dirty = false;
+  zoneEditor.drawing = false;
+  zoneEditor.dragIndex = -1;
+  zoneEditor.hoverIndex = -1;
+  zoneEditor.rectStart = null;
+  zoneEditor.rectCurrent = null;
+  zoneEditor.pointer = null;
+  zoneEditor.lastClick = null;
+  zoneEditor.imageReady = false;
+  $("#zone-camera-name").textContent = `— ${camera.name}`;
+  $("#zone-snap").checked = true;
+  zoneEditor.snap = true;
+  setZoneTool("polygon");
+  updateZoneStatus();
+  $("#zone-dialog").showModal();
+  loadZoneSnapshot(camera.id);
+}
+
+function closeZoneDialog(force = false) {
+  if (!force && zoneEditor.dirty && !window.confirm("Discard unsaved zone changes?")) {
+    return;
+  }
+  zoneEditor.camera = null;
+  zoneEditor.dirty = false;
+  $("#zone-dialog").close();
+}
+
+function undoZone() {
+  if (zoneEditor.undoStack.length === 0) return;
+  zoneEditor.redoStack.push(zoneSnapshot());
+  zoneEditor.points = zoneEditor.undoStack.pop();
+  zoneEditor.dragIndex = -1;
+  zoneEditor.hoverIndex = -1;
+  zoneEditor.drawing = zoneEditor.points.length > 0;
+  zoneMarkDirty();
+  drawZoneEditor();
+}
+
+function redoZone() {
+  if (zoneEditor.redoStack.length === 0) return;
+  zoneEditor.undoStack.push(zoneSnapshot());
+  zoneEditor.points = zoneEditor.redoStack.pop();
+  zoneEditor.dragIndex = -1;
+  zoneEditor.hoverIndex = -1;
+  zoneEditor.drawing = zoneEditor.points.length > 0;
+  zoneMarkDirty();
+  drawZoneEditor();
+}
+
+function clearZone() {
+  if (zoneEditor.points.length === 0) return;
+  zonePushUndo();
+  zoneEditor.points = [];
+  zoneEditor.drawing = false;
+  zoneEditor.hoverIndex = -1;
+  zoneMarkDirty();
+  drawZoneEditor();
+}
+
+function removeZonePoint(index) {
+  if (index < 0 || index >= zoneEditor.points.length) return;
+  zonePushUndo();
+  zoneEditor.points.splice(index, 1);
+  zoneEditor.hoverIndex = -1;
+  zoneEditor.dragIndex = -1;
+  zoneMarkDirty();
+  drawZoneEditor();
+}
+
+function zonePointerDown(event) {
+  if (!zoneEditor.camera || event.button === 2) return;
+  event.preventDefault();
+  const canvas = $("#zone-canvas");
+  canvas.setPointerCapture?.(event.pointerId);
+  const point = zonePoint(event);
+  zoneEditor.pointer = point;
+
+  if (zoneEditor.tool === "rect") {
+    zoneEditor.rectStart = point;
+    zoneEditor.rectCurrent = point;
+    zoneEditor.rectUndo = zoneSnapshot();
+    drawZoneEditor();
+    return;
+  }
+
+  const vertex = zoneHitVertex(event);
+  if (vertex >= 0) {
+    zonePushUndo();
+    zoneEditor.dragIndex = vertex;
+    zoneEditor.hoverIndex = vertex;
+    zoneEditor.lastClick = null;
+    drawZoneEditor();
+    return;
+  }
+
+  const edge = zoneNearestEdge(event);
+  if (edge && zoneEditor.points.length >= 3) {
+    zonePushUndo();
+    zoneEditor.points.splice(edge.index + 1, 0, edge.point);
+    zoneEditor.dragIndex = edge.index + 1;
+    zoneEditor.hoverIndex = edge.index + 1;
+    zoneEditor.drawing = true;
+    zoneMarkDirty();
+    drawZoneEditor();
+    return;
+  }
+
+  const now = performance.now();
+  if (
+    zoneEditor.lastClick &&
+    now - zoneEditor.lastClick.ts < 350 &&
+    Math.hypot(
+      point[0] - zoneEditor.lastClick.point[0],
+      point[1] - zoneEditor.lastClick.point[1]
+    ) < 0.02
+  ) {
+    zoneEditor.lastClick = null;
+    zoneEditor.drawing = false;
+    drawZoneEditor();
+    return;
+  }
+  if (zoneEditor.points.length >= 49) {
+    toast("A zone can have at most 50 points", true);
+    return;
+  }
+  zonePushUndo();
+  zoneEditor.points.push(point);
+  zoneEditor.dragIndex = zoneEditor.points.length - 1;
+  zoneEditor.hoverIndex = zoneEditor.points.length - 1;
+  zoneEditor.drawing = true;
+  zoneEditor.lastClick = { ts: now, point };
+  zoneMarkDirty();
+  drawZoneEditor();
+}
+
+function zonePointerMove(event) {
+  if (!zoneEditor.camera) return;
+  const point = zonePoint(event);
+  zoneEditor.pointer = point;
+  const canvas = $("#zone-canvas");
+
+  if (zoneEditor.dragIndex >= 0) {
+    zoneEditor.points[zoneEditor.dragIndex] = point;
+    zoneMarkDirty();
+    drawZoneEditor();
+    return;
+  }
+  if (zoneEditor.rectStart) {
+    zoneEditor.rectCurrent = point;
+    drawZoneEditor();
+    return;
+  }
+
+  const vertex = zoneHitVertex(event);
+  const edge = vertex < 0 ? zoneNearestEdge(event) : null;
+  zoneEditor.hoverIndex = vertex;
+  canvas.style.cursor = vertex >= 0 ? "grab" : edge ? "copy" : "crosshair";
+  drawZoneEditor();
+}
+
+function zonePointerUp() {
+  $("#zone-canvas").style.cursor = "crosshair";
+  if (zoneEditor.rectStart) {
+    const start = zoneEditor.rectStart;
+    const end = zoneEditor.rectCurrent || start;
+    if (
+      Math.abs(end[0] - start[0]) >= 0.02 &&
+      Math.abs(end[1] - start[1]) >= 0.02
+    ) {
+      zoneEditor.undoStack.push(zoneEditor.rectUndo || zoneSnapshot());
+      zoneEditor.redoStack = [];
+      zoneEditor.points = ZoneGeometry.rectPoints(start, end);
+      zoneEditor.drawing = false;
+      zoneMarkDirty();
+    }
+    zoneEditor.rectStart = null;
+    zoneEditor.rectCurrent = null;
+  }
+  zoneEditor.dragIndex = -1;
+  drawZoneEditor();
+}
+
+function zoneContextMenu(event) {
+  if (!zoneEditor.camera) return;
+  event.preventDefault();
+  removeZonePoint(zoneHitVertex(event));
+}
+
+function zoneDoubleClick(event) {
+  if (!zoneEditor.camera) return;
+  if (zoneHitVertex(event) < 0) {
+    zoneEditor.drawing = false;
+    zoneEditor.lastClick = null;
+    drawZoneEditor();
+  }
+}
+
+function zoneKeydown(event) {
+  if (!zoneEditor.camera) return;
+  if (event.key === "Escape") {
+    event.preventDefault();
+    closeZoneDialog();
+    return;
+  }
+  if ((event.ctrlKey || event.metaKey) && event.key.toLowerCase() === "z") {
+    event.preventDefault();
+    if (event.shiftKey) redoZone();
+    else undoZone();
+    return;
+  }
+  if (event.key === "Backspace" || event.key === "Delete") {
+    if (zoneEditor.hoverIndex >= 0 && zoneEditor.dragIndex < 0) {
+      event.preventDefault();
+      removeZonePoint(zoneEditor.hoverIndex);
+    }
+    return;
+  }
+  if (event.key === "Enter" && event.target.tagName !== "BUTTON") {
+    event.preventDefault();
+    saveZoneEditor(event);
+  }
+}
+
+async function saveZoneEditor(event) {
+  event?.preventDefault?.();
+  if (!zoneEditor.camera) return;
+  const points = zoneEditor.points;
+  if (points.length > 0 && points.length < 3) {
+    $("#zone-warning").textContent = "Add at least 3 points, or use Whole frame.";
+    return;
+  }
+  if (ZoneGeometry.polygonSelfIntersects(points)) {
+    $("#zone-warning").textContent = "Zone edges cross — move or remove a point.";
+    return;
+  }
+  const camera = zoneEditor.camera;
+  const button = $("#zone-save");
+  button.disabled = true;
+  try {
+    const result = await api(`/api/cameras/${camera.id}/zone`, {
+      method: "PUT",
+      body: { polygon: points.length >= 3 ? points : [] },
+    });
+    camera.zone = result.polygon;
+    zoneEditor.dirty = false;
+    $("#zone-dialog").close();
+    toast(
+      result.polygon.length >= 3
+        ? "Detection area saved"
+        : "Whole frame saved (zone cleared)"
+    );
+    loadCameras();
+  } catch (err) {
+    toast(err.message, true);
+  } finally {
+    button.disabled = false;
+  }
+}
+
+function drawSavedZone(camera, canvas) {
+  const rect = canvas.getBoundingClientRect();
+  if (!rect.width || !rect.height) return;
   if (canvas.width !== Math.round(rect.width) || canvas.height !== Math.round(rect.height)) {
     canvas.width = Math.round(rect.width);
     canvas.height = Math.round(rect.height);
   }
   const ctx = canvas.getContext("2d");
   ctx.clearRect(0, 0, canvas.width, canvas.height);
-  const points = state.zones[camera.id] || [];
-  if (points.length === 0) return;
-  ctx.lineWidth = 3;
-  ctx.strokeStyle = state.drawing[camera.id] ? "#f5a623" : "#3ea6ff";
-  ctx.fillStyle = "rgba(62, 166, 255, 0.12)";
-  ctx.beginPath();
-  points.forEach(([x, y], index) => {
-    const px = x * canvas.width;
-    const py = y * canvas.height;
-    if (index === 0) ctx.moveTo(px, py);
-    else ctx.lineTo(px, py);
-  });
-  if (state.drawing[camera.id]) {
-    ctx.stroke();
-  } else {
-    ctx.closePath();
-    ctx.fill();
-    ctx.stroke();
-  }
-  points.forEach(([x, y]) => {
-    ctx.beginPath();
-    ctx.arc(x * canvas.width, y * canvas.height, 4, 0, Math.PI * 2);
-    ctx.fillStyle = "#ffffff";
-    ctx.fill();
-  });
+  if (camera.zone.length < 3) return;
+  zoneTrace(ctx, camera.zone, canvas.width, canvas.height, true);
+  ctx.fillStyle = "rgba(245, 166, 35, 0.10)";
+  ctx.fill();
+  ctx.strokeStyle = "#f5a623";
+  ctx.lineWidth = 2;
+  ctx.stroke();
 }
 
-function addZonePoint(event, camera, canvas, card) {
-  if (!state.drawing[camera.id]) return;
-  event.preventDefault();
-  state.zones[camera.id].push(canvasPoint(event, canvas));
-  drawZone(camera, canvas);
-  toggleZoneButtons(card, true);
-}
-
-function finishZone(camera, card) {
-  if (!state.drawing[camera.id]) return;
-  state.drawing[camera.id] = false;
-  card.querySelector(".video-wrap").classList.remove("drawing");
-  const canvas = card.querySelector("canvas");
-  state.zones[camera.id] = state.zones[camera.id].slice(0, 49);
-  drawZone(camera, canvas);
-}
-
-function startZone(camera, card) {
-  state.drawing[camera.id] = true;
-  state.zones[camera.id] = camera.zone.slice();
-  card.querySelector(".video-wrap").classList.add("drawing");
-  toggleZoneButtons(card, true);
-  drawZone(camera, card.querySelector("canvas"));
-  toast("Click on the video to add zone points, then Save zone");
-}
-
-function toggleZoneButtons(card, editing) {
-  card.querySelector('[data-act="zone"]').classList.toggle("hidden", editing);
-  card.querySelector('[data-act="zone-save"]').classList.toggle("hidden", !editing);
-  card.querySelector('[data-act="zone-cancel"]').classList.toggle("hidden", !editing);
-}
-
-async function saveZone(camera, card) {
-  finishZone(camera, card);
-  const polygon = state.zones[camera.id];
-  if (polygon.length > 0 && polygon.length < 3) {
-    toast("A zone needs at least 3 points (or none for the whole frame)", true);
-    return;
-  }
-  try {
-    const result = await api(`/api/cameras/${camera.id}/zone`, {
-      method: "PUT",
-      body: { polygon },
-    });
-    camera.zone = result.polygon;
-    state.zones[camera.id] = result.polygon.slice();
-    toggleZoneButtons(card, false);
-    drawZone(camera, card.querySelector("canvas"));
-    toast("Zone saved");
-  } catch (err) {
-    toast(err.message, true);
+function redrawZoneOverlays() {
+  for (const camera of state.cameras) {
+    const canvas = document.querySelector(
+      `.video-wrap[data-id="${camera.id}"] canvas`
+    );
+    if (canvas) drawSavedZone(camera, canvas);
   }
 }
+
 
 async function editWebhook(camera) {
   const url = window.prompt("Webhook URL (empty to disable):", camera.webhook_url || "");
@@ -725,5 +1134,34 @@ $("#settings-form").addEventListener("submit", saveSettings);
 $("#llm-test").addEventListener("click", testLlm);
 $("#refresh-events").addEventListener("click", loadEvents);
 $("#identify-close").addEventListener("click", () => $("#identify-dialog").close());
+
+$("#zone-form").addEventListener("submit", saveZoneEditor);
+$("#zone-cancel").addEventListener("click", () => closeZoneDialog());
+$("#zone-undo").addEventListener("click", undoZone);
+$("#zone-redo").addEventListener("click", redoZone);
+$("#zone-clear").addEventListener("click", clearZone);
+$("#zone-refresh").addEventListener("click", () => {
+  if (zoneEditor.camera) loadZoneSnapshot(zoneEditor.camera.id);
+});
+$("#zone-snap").addEventListener("change", (event) => {
+  zoneEditor.snap = event.target.checked;
+  drawZoneEditor();
+});
+$$("[data-zone-tool]").forEach((button) =>
+  button.addEventListener("click", () => setZoneTool(button.dataset.zoneTool))
+);
+$("#zone-dialog").addEventListener("keydown", zoneKeydown);
+$("#zone-dialog").addEventListener("close", () => {
+  zoneEditor.camera = null;
+});
+const zoneCanvasEl = $("#zone-canvas");
+zoneCanvasEl.addEventListener("pointerdown", zonePointerDown);
+zoneCanvasEl.addEventListener("pointermove", zonePointerMove);
+zoneCanvasEl.addEventListener("pointerup", zonePointerUp);
+zoneCanvasEl.addEventListener("pointercancel", zonePointerUp);
+zoneCanvasEl.addEventListener("contextmenu", zoneContextMenu);
+zoneCanvasEl.addEventListener("dblclick", zoneDoubleClick);
+window.addEventListener("resize", redrawZoneOverlays);
+$("#zone-image").addEventListener("load", redrawZoneOverlays);
 
 boot();

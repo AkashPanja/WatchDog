@@ -130,6 +130,42 @@
     </form>
   </dialog>
 
+
+  <dialog id="zone-dialog" class="wide">
+    <form id="zone-form" method="dialog">
+      <div class="row between">
+        <h3>Detection area <span class="muted" id="zone-camera-name"></span></h3>
+        <span class="muted small" id="zone-info"></span>
+      </div>
+      <div class="zone-toolbar">
+        <div class="segmented" role="group" aria-label="Drawing tool">
+          <button type="button" data-zone-tool="polygon" class="active">Polygon</button>
+          <button type="button" data-zone-tool="rect">Rectangle</button>
+        </div>
+        <span class="zone-divider"></span>
+        <button type="button" id="zone-undo" class="small">Undo</button>
+        <button type="button" id="zone-redo" class="small">Redo</button>
+        <button type="button" id="zone-clear" class="small">Whole frame</button>
+        <span class="zone-divider"></span>
+        <label class="check"><input type="checkbox" id="zone-snap" checked> Snap to 1%</label>
+        <span class="spacer"></span>
+        <button type="button" id="zone-refresh" class="small ghost">Refresh image</button>
+      </div>
+      <div class="zone-stage">
+        <img id="zone-image" alt="Latest camera frame">
+        <div id="zone-loading" class="zone-loading">Loading snapshot…</div>
+        <canvas id="zone-canvas"></canvas>
+        <div class="zone-hint">Click to add · drag a point to move · double-click to finish · right-click a point to delete</div>
+      </div>
+      <p id="zone-warning" class="error"></p>
+      <p class="muted small zone-help">Empty area = whole frame. Rectangle: drag on the image. Ctrl+Z / Ctrl+Shift+Z undo, Delete removes the hovered point.</p>
+      <div class="row between">
+        <button type="button" id="zone-cancel" class="ghost">Cancel</button>
+        <button type="submit" id="zone-save" class="primary">Save zone</button>
+      </div>
+    </form>
+  </dialog>
+
   <dialog id="identify-dialog">
     <h3>Identification result</h3>
     <div id="identify-content"></div>
@@ -140,6 +176,7 @@
 
   <div id="toast" class="toast hidden"></div>
 
+  <script src="/static/zone-geometry.js"></script>
   <script src="/static/app.js"></script>
 </body>
 </html>

@@ -7,6 +7,7 @@ from app.geometry import (
     bbox_zone_hit,
     face_rank,
     point_in_polygon,
+    polygon_self_intersects,
     valid_polygon,
 )
 from app.jsonutil import extract_json
@@ -51,6 +52,20 @@ def test_valid_polygon() -> None:
     assert not valid_polygon([[0.5, 0.5]])
     assert not valid_polygon([[1.5, 0.5], [0.5, 0.5], [0.1, 0.9]])
     assert not valid_polygon([[0.1, 0.1]] * 51)
+
+
+def test_zone_self_intersection_bowtie() -> None:
+    bowtie = [[0.0, 0.0], [1.0, 1.0], [1.0, 0.0], [0.0, 1.0]]
+    assert polygon_self_intersects(bowtie)
+
+
+def test_zone_self_intersection_valid_shapes() -> None:
+    assert not polygon_self_intersects(SQUARE)
+    assert not polygon_self_intersects(
+        [[0.0, 0.0], [1.0, 0.0], [0.5, 0.5], [1.0, 1.0], [0.0, 1.0]]
+    )
+    assert not polygon_self_intersects([[0.0, 0.0], [1.0, 0.0], [0.0, 1.0]])
+    assert not polygon_self_intersects([])
 
 
 def test_extract_json_plain() -> None:

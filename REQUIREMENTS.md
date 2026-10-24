@@ -117,11 +117,18 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 - **FR-ZON-1** One zone per camera, a closed polygon of **3–50 points** with normalized
   coordinates in `[0,1]` (relative to the analysis frame).
 - **FR-ZON-2** An **empty zone means "whole frame"** — detection applies everywhere.
-- **FR-ZON-3** Invalid polygons (fewer than 3 points, out-of-range values) are rejected
-  with HTTP 400 on `PUT /api/cameras/{id}/zone`.
-- **FR-ZON-4** Zone editing UI: `Edit zone` shows the snapshot, user clicks to add points,
-  double-click ends drawing, `Save zone` persists. Minimum 3 points enforced client-side
-  and server-side.
+- **FR-ZON-3** Invalid polygons are rejected with HTTP 400 on
+  `PUT /api/cameras/{id}/zone`: fewer than 3 non-empty points, more than 50 points,
+  out-of-range values, or **self-intersecting edges** (bow-tie).
+- **FR-ZON-4** Zone editor is a modal with a large fresh snapshot and these interactions:
+  - polygon tool: click adds a point, drag a vertex moves it, click an edge inserts one,
+    right-click/Delete removes the hovered vertex, double-click or Enter finishes;
+  - rectangle tool: drag to create a 4-point activity zone;
+  - undo/redo buttons and Ctrl+Z / Ctrl+Shift+Z (60 steps);
+  - `Whole frame` clears the zone; `Snap to 1%` rounds points; `Refresh image` reloads;
+  - live status shows point count and % of frame; saving is blocked while edges cross or
+    fewer than 3 points exist; tiny areas (<0.2 %) warn;
+  - Cancel/Escape discards only after confirmation when the draft is dirty.
 - **FR-ZON-5** Motion detection only counts pixels **inside** the zone: grayscale
   absolute difference (Gaussian blur 21×21, threshold 25) intersected with the zone mask;
   ratio = changed-in-zone / zone-area.
@@ -131,6 +138,8 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
   the model; the prompt explicitly asks whether a human is inside the yellow area.
 - **FR-ZON-8** Zone changes take effect immediately (live worker update), without
   restarting ffmpeg.
+- **FR-ZON-9** The saved zone is outlined in amber on the camera's live view, so the
+  detection area is visible without opening the editor.
 
 ### 3.5 Detection engines (per camera)
 
@@ -344,8 +353,9 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 - **NFR-3** Memory: bounded HLS window and 15-frame buffer per camera; event log capped at 200.
 - **NFR-4** Crash-resilience: a dead camera/stream/LLM/webhook must never take down the app.
 - **NFR-5** All logs to stderr with standard levels; no secrets in logs.
-- **NFR-6** Repo is lint-clean (`ruff`) and unit-tested (`pytest`): 43 tests, 1 skipped
-  when local vision deps are absent. CI builds/publishes the image.
+- **NFR-6** Repo is lint-clean (`ruff`), unit-tested (`pytest`: 46 tests, 1 skipped when
+  local vision deps are absent) and the zone geometry helpers have 6 Node tests run in CI.
+  CI builds/publishes the image.
 - **NFR-7** Time handling: UTC everywhere internally; ISO-8601 in payloads; `TZ` only
   affects container logs.
 
@@ -401,12 +411,16 @@ A technical home/NAS user running Docker Compose on the same LAN as the cameras.
 14. If the RTSP feed freezes without closing, the stall watchdog restarts ffmpeg within
     ~`STREAM_STALL_SECONDS` + 5 s and the playlist advances again.
 15. A player loading `/stream.m3u8` fetches `seg_*.ts` next to it successfully (no 404s).
+16. A rectangle drag creates a 4-point zone; dragging a vertex and undoing restores the
+    previous shape; a bow-tie is blocked client- and server-side (HTTP 400).
 
 ---
 
 ## 9. Verification
 
 ```bash
+# JS geometry tests (node 20+)
+node --test tests/zone_geometry.test.mjs
 # unit tests (no camera needed)
 pytest -q
 # lint

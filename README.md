@@ -86,10 +86,19 @@ CI builds and pushes the image automatically on every `v*` tag and every push to
    the RTSP field.
 2. The live view uses HLS with a rolling 5-minute playlist — drag the seek bar to review
    the last 5 minutes; older segments are deleted automatically.
-3. **Edit zone** → click points on the video (min 3) → **Save zone**. With no zone the
-   whole frame counts. Double-click ends drawing.
-   Motion **threshold** and **cooldown** can be overridden per camera in the same dialog
-   (blank = the `MOTION_*` environment defaults); changes apply without a stream restart.
+3. **Edit zone** opens a large snapshot editor:
+   - **Polygon**: click to add points, drag a point to move it, click an edge to insert a
+     point, right-click/Delete a point, double-click (or Enter) to finish the outline.
+   - **Rectangle**: drag on the image (activity-zone style) for a quick 4-point box.
+   - **Undo/redo** (buttons or Ctrl+Z / Ctrl+Shift+Z), **Whole frame** clears the zone,
+     **Snap to 1%** helps align to edges.
+   - The status line shows point count, % of frame covered, and blocks saving when edges
+     cross (bow-tie) or fewer than 3 points remain.
+   - **Refresh image** pulls a new snapshot; the saved zone is outlined in amber on the
+     live view.
+   With no zone the whole frame counts. Motion **threshold** and **cooldown** can be
+   overridden per camera in the camera dialog (blank = `MOTION_*` defaults); changes apply
+   without a stream restart.
 4. **Webhook** → URL plus optional shared secret (sent as `X-WatchDog-Secret`);
    transient failures are retried (`WEBHOOK_RETRIES`), final status is stored on the event.
 5. **Identify** → runs identification for that camera and shows match, name, confidence,
@@ -155,7 +164,8 @@ POST   /api/cameras/test-onvif         {host, port, username, password} → {rts
 GET    /api/cameras/discover           WS-Discovery probe → [{host, onvif_port, name, hardware}]
 GET    /api/cameras/{id}/stream.m3u8   live HLS playlist (5-minute window)
 GET    /api/cameras/{id}/snapshot.jpg  newest frame
-PUT    /api/cameras/{id}/zone          {polygon: [[x,y],...]} normalized 0-1
+PUT    /api/cameras/{id}/zone          {polygon: [[x,y],...]} normalized 0-1;
+                                       empty = whole frame; crossing edges rejected
 PUT    /api/cameras/{id}/webhook       {url, secret}
 POST   /api/cameras/{id}/identify
 

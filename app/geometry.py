@@ -45,6 +45,52 @@ def bbox_zone_hit(
     return False
 
 
+def _orientation(
+    a: list[float], b: list[float], c: list[float]
+) -> float:
+    return (b[0] - a[0]) * (c[1] - a[1]) - (b[1] - a[1]) * (c[0] - a[0])
+
+
+def _proper_intersection(
+    a: list[float], b: list[float], c: list[float], d: list[float]
+) -> bool:
+    """True when two segments cross at a single interior point."""
+    if a == b or c == d:
+        return False
+    epsilon = 1e-12
+    o1 = _orientation(a, b, c)
+    o2 = _orientation(a, b, d)
+    o3 = _orientation(c, d, a)
+    o4 = _orientation(c, d, b)
+    return (
+        (o1 > epsilon or o1 < -epsilon)
+        and (o2 > epsilon or o2 < -epsilon)
+        and (o3 > epsilon or o3 < -epsilon)
+        and (o4 > epsilon or o4 < -epsilon)
+        and (o1 > 0) != (o2 > 0)
+        and (o3 > 0) != (o4 > 0)
+    )
+
+
+def polygon_self_intersects(polygon: list[list[float]]) -> bool:
+    """True when a polygon's edges cross (bow-tie / invalid zone)."""
+    count = len(polygon)
+    if count < 4:
+        return False
+    for i in range(count):
+        for j in range(i + 1, count):
+            if j == i + 1 or (i == 0 and j == count - 1):
+                continue
+            if _proper_intersection(
+                polygon[i],
+                polygon[(i + 1) % count],
+                polygon[j],
+                polygon[(j + 1) % count],
+            ):
+                return True
+    return False
+
+
 def valid_polygon(polygon: list[list[float]], max_points: int = 50) -> bool:
     """Normalized polygon: 3..max_points points with 0-1 coordinates."""
     if polygon and len(polygon) < 3:

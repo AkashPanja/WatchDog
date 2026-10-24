@@ -16,6 +16,7 @@ from .. import discover as discover_module
 from .. import identify as identify_module
 from ..config import config
 from ..db import SessionLocal
+from ..geometry import polygon_self_intersects
 from ..llm import DEFAULT_MODELS, PROVIDERS
 from ..models import Camera
 from ..onvif import OnvifError, resolve_rtsp
@@ -294,6 +295,10 @@ def set_zone(camera_id: str, payload: ZonePayload) -> dict:
             raise HTTPException(
                 status_code=400, detail="zone points must be normalized to 0-1"
             )
+    if polygon and polygon_self_intersects(polygon):
+        raise HTTPException(
+            status_code=400, detail="zone edges must not cross"
+        )
     with SessionLocal() as session:
         camera = _camera_or_404(session, camera_id)
         camera.zone = json.dumps(

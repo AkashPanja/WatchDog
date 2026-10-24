@@ -120,3 +120,45 @@ def test_relative_hls_paths() -> None:
         playlist = client.get("/api/cameras/smoke-cam/stream.m3u8")
         assert playlist.status_code == 200
         assert playlist.text.startswith("#EXTM3U")
+
+
+def test_zone_validation_rejects_crossing_edges() -> None:
+    from fastapi.testclient import TestClient
+
+    from app.db import SessionLocal
+    from app.main import app
+    from app.models import Camera
+
+    with SessionLocal() as session:
+        camera = Camera(name="Zone test", rtsp_url="")
+        session.add(camera)
+        session.commit()
+        camera_id = camera.id
+    try:
+        with TestClient(app) as client:
+            client.post(
+                "/api/login", json={"username": "tester", "password": "secret"}
+            )
+            bowtie = [[0.1, 0.1], [0.9, 0.9], [0.9, 0.1], [0.1, 0.9]]
+            crossed = client.put(
+                f"/api/cameras/{camera_id}/zone", json={"polygon": bowtie}
+            )
+            assert crossed.status_code == 400
+            assert "cross" in crossed.json()["detail"]
+            square = [[0.2, 0.2], [0.8, 0.2], [0.8, 0.8], [0.2, 0.8]]
+            saved = client.put(
+                f"/api/cameras/{camera_id}/zone", json={"polygon": square}
+            )
+            assert saved.status_code == 200
+            assert len(saved.json()["polygon"]) == 4
+            two_points = client.put(
+                f"/api/cameras/{camera_id}/zone",
+                json={"polygon": [[0.1, 0.1], [0.2, 0.2]]},
+            )
+            assert two_points.status_code == 400
+    finally:
+        with SessionLocal() as session:
+            camera = session.get(Camera, camera_id)
+            if camera is not None:
+                session.delete(camera)
+                session.commit()
